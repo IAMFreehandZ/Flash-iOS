@@ -27,9 +27,111 @@ jobs:
         run: |
           cd FlashMoE-iOS
           if [ $scheme = default ]; then scheme=$(cat default); fi
-          if [ "`ls -A | grep -i \\.xcworkspace\$`" ]; then filetype_parameter="workspace" && file_to_build="`ls -A | grep -i \\.xcworkspace\$`"; else filetype_parameter="project" && file_to_build="`ls -A | grep -i \\.xcodeproj\$`"; fi
+          if [ "`ls -A | grep -i \\\.xcworkspace$`" ]; then filetype_parameter="workspace" && file_to_build="`ls -A | grep -i \\\.xcworkspace$`"; else filetype_parameter="project" && file_to_build[...]
           file_to_build=`echo $file_to_build | awk '{$1=$1;print}'`
           xcodebuild clean build analyze -scheme "$scheme" -"$filetype_parameter" "$file_to_build" -derivedDataPath build CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO
+
+      # IPA inspection step: always runs to collect diagnostics. Inserted here so we can inspect any produced .ipa or .app in the workspace/build directories.
+      - name: Inspect and (if needed) repackage IPA
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ART=/tmp/ipa-inspect
+          rm -rf "$ART" && mkdir -p "$ART"
+
+          # Try to find an .ipa under the workspace (prefer build outputs)
+          IPA_PATH="$(find "${GITHUB_WORKSPACE:-.}" -type f -name "*.ipa" | head -n1 || true)"
+
+          # Fallback: find .app if no .ipa found
+          if [ -z "$IPA_PATH" ]; then
+            APP_PATH="$(find "${GITHUB_WORKSPACE:-.}" -type d -name "*.app" | head -n1 || true)"
+            if [ -n "$APP_PATH" ]; then
+              echo "No IPA found, repackaging found .app with ditto: $APP_PATH"
+              ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ART/repacked.ipa" || true
+              IPA_PATH="$ART/repacked.ipa"
+            else
+              echo "No IPA or .app found in workspace; aborting inspection."
+              # Not fatal for the workflow — just exit the step
+              exit 0
+            fi
+          fi
+
+          echo "Using IPA: $IPA_PATH"
+          unzip -l "$IPA_PATH" > "$ART/unzip-list.txt" || true
+          mkdir -p "$ART/extracted"
+          unzip -q "$IPA_PATH" -d "$ART/extracted" || true
+
+          APP="$(ls -d "$ART/extracted"/Payload/*.app 2>/dev/null | head -n1 || true)"
+          echo "APP found: $APP" | tee "$ART/app-path.txt"
+
+          if [ -z "$APP" ]; then
+            echo "No .app in IPA payload; aborting."
+            exit 0
+          fi
+
+          # Dump Info.plist (works for binary and XML plists on macOS)
+          if command -v plutil >/dev/null 2>&1; then
+            plutil -p "$APP/Info.plist" > "$ART/Info.plist.txt" || true
+          else
+            strings "$APP/Info.plist" > "$ART/Info.plist.txt" || true
+          fi
+
+          # Extract CFBundleExecutable
+          EXE=""
+          if command -v plutil >/dev/null 2>&1 && command -v xmllint >/dev/null 2>&1; then
+            EXE=$(plutil -extract CFBundleExecutable xml1 -o - "$APP/Info.plist" 2>/dev/null | xmllint --xpath 'string(//string)' - 2>/dev/null || true)
+          elif command -v plutil >/dev/null 2>&1; then
+            EXE=$(plutil -convert xml1 -o - "$APP/Info.plist" 2>/dev/null | sed -n 's/.*<key>CFBundleExecutable<\/key>.*\n.*<string>\(.*\)<\/string>.*/\1/p' || true)
+          else
+            EXE=$(strings "$APP/Info.plist" 2>/dev/null | sed -n 's/.*CFBundleExecutable.*/&/p' || true)
+          fi
+
+          echo "CFBundleExecutable=$EXE" | tee "$ART/exe.txt"
+          ls -la "$APP" > "$ART/ls-root.txt" || true
+
+          if [ -n "$EXE" ] && [ -f "$APP/$EXE" ]; then
+            echo "Executable exists: $APP/$EXE" | tee -a "$ART/exe.txt"
+            ls -la "$APP/$EXE" >> "$ART/exe.txt" || true
+            if command -v file >/dev/null 2>&1; then file "$APP/$EXE" >> "$ART/exe.txt" || true; fi
+            if command -v lipo >/dev/null 2>&1; then
+              lipo -info "$APP/$EXE" >> "$ART/exe.txt" || true
+            fi
+            if [[ "$(uname -s)" == "Darwin" ]] && command -v codesign >/dev/null 2>&1 ; then
+              codesign -d --verbose=4 "$APP" >> "$ART/exe.txt" 2>&1 || true
+            else
+              echo "codesign skipped (not macOS or codesign not found)" >> "$ART/exe.txt"
+            fi
+          else
+            echo "Executable missing or mismatch (CFBundleExecutable=$EXE). Attempting repackage with ditto." | tee -a "$ART/exe.txt"
+            REPACK="$ART/repacked.ipa"
+            ditto -c -k --sequesterRsrc --keepParent "$APP" "$REPACK" || true
+            echo "Repackaged to $REPACK" >> "$ART/exe.txt"
+            unzip -l "$REPACK" >> "$ART/unzip-list.txt" || true
+            unzip -q "$REPACK" -d "$ART/extracted_repacked" || true
+            APP2="$(ls -d "$ART/extracted_repacked"/Payload/*.app 2>/dev/null | head -n1 || true)"
+            echo "Repacked APP: $APP2" >> "$ART/exe.txt"
+            if [ -n "$APP2" ] && [ -f "$APP2/$EXE" ]; then
+              echo "Executable present after repackage: $APP2/$EXE" >> "$ART/exe.txt"
+              ls -la "$APP2/$EXE" >> "$ART/exe.txt" || true
+            else
+              echo "Still missing executable after repackage. Listing $APP2 below" >> "$ART/exe.txt"
+              ls -la "$APP2" >> "$ART/exe.txt" || true
+            fi
+          fi
+
+          # Copy everything to workspace so upload-artifact action can pick it up
+          mkdir -p "$GITHUB_WORKSPACE/ipa-inspect-output" || true
+          cp -R "$ART" "$GITHUB_WORKSPACE/ipa-inspect-output" || true
+
+      - name: Upload IPA inspection artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipa-inspection
+          path: ipa-inspect-output
+
       - name: Upload build artifact
         if: success()
         uses: actions/upload-artifact@v4
