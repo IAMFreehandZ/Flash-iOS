@@ -1,0 +1,22 @@
+name: build-ipa
+on: [workflow_dispatch]
+jobs:
+  build:
+    runs-on: macos-26   # (or macos-15 if you target Xcode 16.x)
+    steps:
+      - uses: actions/checkout@v4
+      - name: Archive
+        run: |
+          xcodebuild archive \
+            -project FlashMoE-iOS/FlashMoE.xcodeproj \
+            -scheme FlashMoE -configuration Release \
+            -archivePath build/FlashMoE.xcarchive \
+            -destination 'generic/platform=iOS' \
+            -allowProvisioningUpdates
+      - name: Export IPA
+        run: |
+          xcodebuild -exportArchive -archivePath build/FlashMoE.xcarchive \
+            -exportOptionsPlist exportOptions.plist \
+            -exportPath ipa
+      - uses: actions/upload-artifact@v4
+        with: { name: FlashMoE, path: ipa/FlashMoE.ipa }
