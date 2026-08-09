@@ -1,0 +1,49 @@
+name: Build FlashMoE IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ipa:
+    name: Build unsigned IPA
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          if ls /Applications/Xcode_26*.app >/dev/null 2>&1; then
+            sudo xcode-select -s "$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)"
+          fi
+          xcodebuild -version
+
+      - name: Build for device (unsigned)
+        run: |
+          xcodebuild \
+            -project FlashMoE-iOS/FlashMoE.xcodeproj \
+            -scheme FlashMoE \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package IPA
+        run: |
+          APP="$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name 'FlashMoE.app')"
+          test -n "$APP" || { echo "ERROR: FlashMoE.app not found"; exit 1; }
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          ditto -c -k --sequesterRsrc --keepParent Payload FlashMoE.ipa
+          ls -lh FlashMoE.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlashMoE-ipa
+          path: FlashMoE.ipa
