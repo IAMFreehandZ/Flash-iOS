@@ -32,7 +32,7 @@ PY
 printf '#!/bin/sh\nexit 0\n' > "$APP/FlashMoE"
 chmod 755 "$APP/FlashMoE"
 
-"$PACKAGER" "$APP" "$IPA"
+bash "$PACKAGER" "$APP" "$IPA"
 
 python3 - "$IPA" <<'PY'
 import plistlib
@@ -65,7 +65,7 @@ PY
 
 BROKEN_APP="$TEST_ROOT/Broken.app"
 mkdir -p "$BROKEN_APP"
-if "$PACKAGER" "$BROKEN_APP" "$TEST_ROOT/Broken.ipa" 2>"$TEST_ROOT/broken.err"; then
+if bash "$PACKAGER" "$BROKEN_APP" "$TEST_ROOT/Broken.ipa" 2>"$TEST_ROOT/broken.err"; then
   echo "ERROR: packaging an app without Info.plist succeeded" >&2
   exit 1
 fi
