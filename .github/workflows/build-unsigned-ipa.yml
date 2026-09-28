@@ -1,0 +1,59 @@
+name: Build unsigned LiveContainer IPA
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - ".github/workflows/build-unsigned-ipa.yml"
+      - ".github/scripts/package-unsigned-ipa.sh"
+      - "FlashMoE-iOS/**"
+
+permissions:
+  contents: read
+
+jobs:
+  build-unsigned-ipa:
+    name: Build and validate unsigned IPA
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Build unsigned device app
+        run: |
+          xcodebuild clean build \
+            -project FlashMoE-iOS/FlashMoE.xcodeproj \
+            -scheme FlashMoE \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/FlashMoEDerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package and validate LiveContainer IPA
+        run: |
+          APP="$RUNNER_TEMP/FlashMoEDerivedData/Build/Products/Release-iphoneos/FlashMoE.app"
+          .github/scripts/package-unsigned-ipa.sh \
+            "$APP" \
+            artifacts/FlashMoE-unsigned.ipa
+
+          {
+            echo '### LiveContainer IPA'
+            echo 'Download the **FlashMoE-unsigned-ipa** artifact, unzip the GitHub artifact once, then import `FlashMoE-unsigned.ipa` into LiveContainer.'
+            echo 'The IPA is unsigned; LiveContainer must sign it or bypass code signing according to its configuration.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v7
+        with:
+          name: FlashMoE-unsigned-ipa
+          path: artifacts/FlashMoE-unsigned.ipa
+          if-no-files-found: error
