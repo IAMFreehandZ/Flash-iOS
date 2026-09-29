@@ -32,6 +32,8 @@ struct ModelListView: View {
     @State private var selectedModel: LocalModel?
     @AppStorage("cacheIOSplit") private var cacheIOSplit: Int = 1
     @AppStorage("chatTemplateEnabled") private var chatTemplateEnabled: Bool = true
+    @AppStorage("maxContextTokens") private var maxContextTokens: Int = GenerationSettings.defaultContextTokens
+    @AppStorage("maxOutputTokens") private var maxOutputTokens: Int = GenerationSettings.defaultOutputTokens
     private let downloadManager = DownloadManager.shared
 
     var body: some View {
@@ -98,6 +100,26 @@ struct ModelListView: View {
             }
 
             Section("Chat Settings") {
+                Picker("Context Window", selection: $maxContextTokens) {
+                    ForEach(GenerationSettings.contextOptions, id: \.self) { tokens in
+                        Text("\(tokens.formatted()) tokens").tag(tokens)
+                    }
+                }
+                .pickerStyle(.menu)
+                Text("Messages, thinking, and replies share this window. Larger windows use more memory. Reload the model to apply.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Picker("Max Output Tokens", selection: $maxOutputTokens) {
+                    ForEach(GenerationSettings.outputOptions, id: \.self) { tokens in
+                        Text("\(tokens.formatted()) tokens").tag(tokens)
+                    }
+                }
+                .pickerStyle(.menu)
+                Text("Includes thinking and answer tokens. Limited by the remaining context space.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 Toggle("Chat Template", isOn: $chatTemplateEnabled)
                 Text("Wraps prompts in Qwen chat format (<|im_start|>). Disable for smoke test models or raw text mode.")
                     .font(.caption)
@@ -167,7 +189,7 @@ struct ModelListView: View {
             do {
                 try await engine.loadModel(
                     at: model.path,
-                    maxContext: 4096,
+                    maxContext: maxContextTokens,
                     useTiered: model.hasTiered,
                     use2bit: model.has2bit && !model.hasTiered && !model.has4bit,
                     cacheIOSplit: cacheIOSplit,

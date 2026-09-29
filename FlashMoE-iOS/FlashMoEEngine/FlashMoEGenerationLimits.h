@@ -11,8 +11,17 @@ static inline int flashmoe_generation_budget(int capacity, int position,
         closing_tokens < 0 || requested_tokens <= 0) return 0;
 
     int64_t available = (int64_t)capacity - position - prompt_tokens - closing_tokens - 1;
-    if (available < requested_tokens) return 0;
-    return requested_tokens;
+    if (available <= 0) return 0;
+    return available < requested_tokens ? (int)available : requested_tokens;
+}
+
+// A positive thinking limit leaves half the output budget available for the answer.
+// Zero continues to mean unlimited thinking.
+static inline int flashmoe_thinking_budget(int configured_tokens, int output_tokens) {
+    if (configured_tokens <= 0 || output_tokens <= 0) return 0;
+    int budget = output_tokens - output_tokens / 2 - 1;  // reserve </think> too
+    if (budget < 1) budget = 1;
+    return budget < configured_tokens ? budget : configured_tokens;
 }
 
 #endif

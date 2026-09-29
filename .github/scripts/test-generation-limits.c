@@ -31,7 +31,27 @@ int main(void) {
             failures++;
         }
     }
+    const struct {
+        const char *name;
+        int configured, output, expected;
+    } thinking_cases[] = {
+        {"larger output leaves 1024 tokens for an answer", 2048, 2048, 1023},
+        {"legacy 500-token output keeps its answer reserve", 2048, 500, 249},
+        {"configured thinking limit remains an upper bound", 64, 2048, 64},
+        {"large output honors configured thinking limit", 2048, 8192, 2048},
+        {"zero thinking budget remains unlimited", 0, 2048, 0},
+        {"short response keeps half its tokens for the answer", 2048, 64, 31},
+    };
+    for (size_t i = 0; i < sizeof(thinking_cases) / sizeof(thinking_cases[0]); i++) {
+        int actual = flashmoe_thinking_budget(thinking_cases[i].configured,
+                                              thinking_cases[i].output);
+        if (actual != thinking_cases[i].expected) {
+            fprintf(stderr, "FAIL: %s: expected %d, got %d\n",
+                    thinking_cases[i].name, thinking_cases[i].expected, actual);
+            failures++;
+        }
+    }
     if (failures) return 1;
-    puts("generation limit tests passed (12 cases)");
+    puts("generation limit tests passed (12 context cases, 6 thinking cases)");
     return 0;
 }
