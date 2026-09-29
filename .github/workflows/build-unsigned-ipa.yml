@@ -8,6 +8,7 @@ on:
       - ".github/workflows/build-unsigned-ipa.yml"
       - ".github/scripts/package-unsigned-ipa.sh"
       - "FlashMoE-iOS/**"
+      - "metal_infer/**"
 
 permissions:
   contents: read
