@@ -733,7 +733,7 @@ int flashmoe_generate(
                 double prefill_elapsed = now_ms() - prefill_start;
                 double prefill_tps = prefill_elapsed > 0 ? (token_idx + 1) * 1000.0 / prefill_elapsed : 0;
                 ctx->tokens_per_second = prefill_tps;
-                ctx->tokens_generated = -(token_idx + 1);  // negative = prefill in progress
+                // Progress uses negative callback counts; no output tokens exist yet.
                 if (callback) {
                     char prefill_status[64];
                     snprintf(prefill_status, sizeof(prefill_status),
