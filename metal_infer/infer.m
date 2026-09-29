@@ -2619,7 +2619,8 @@ typedef struct {
     id<MTLBuffer> buf_kv_k[16];  // K cache per full-attn layer (max 16)
     id<MTLBuffer> buf_kv_v[16];  // V cache per full-attn layer (max 16)
     id<MTLBuffer> buf_attn_q;       // [NUM_ATTN_HEADS * HEAD_DIM floats] all query heads
-    id<MTLBuffer> buf_attn_scores;  // [NUM_ATTN_HEADS * MAX_SEQ_LEN floats] all heads' scores
+    id<MTLBuffer> buf_attn_scores;  // [NUM_ATTN_HEADS * gpu_kv_seq_len floats]
+    int gpu_kv_seq_len;            // allocated GPU KV capacity and score row stride
     id<MTLBuffer> buf_attn_out;     // [NUM_ATTN_HEADS * HEAD_DIM floats] full attention output
     id<MTLBuffer> buf_attn_gate;    // [NUM_ATTN_HEADS * HEAD_DIM floats] sigmoid gate
     // CMD3 GPU-side combine buffers (weighted_sum + residual + norm on GPU)
@@ -2916,6 +2917,7 @@ static MetalCtx *metal_setup(void) {
     {
         size_t kv_dim = NUM_KV_HEADS * HEAD_DIM;  // 512
         int gpu_kv = (g_kv_seq_len < GPU_KV_SEQ) ? g_kv_seq_len : GPU_KV_SEQ;
+        ctx->gpu_kv_seq_len = gpu_kv;
         size_t kv_cache_size = (size_t)gpu_kv * kv_dim * sizeof(float);
         for (int i = 0; i < g_cfg.num_full_attn_layers; i++) {
             ctx->buf_kv_k[i] = [ctx->device newBufferWithLength:kv_cache_size
@@ -7007,7 +7009,8 @@ static void fused_layer_forward(
         memcpy(kv->v_cache + cache_pos * kv_dim, v_out, kv_dim * sizeof(float));
 
         int fa_idx = (layer_idx + 1) / FULL_ATTN_INTERVAL - 1;
-        if (g_metal && g_metal->attn_scores_pipe && fa_idx >= 0 && fa_idx < g_cfg.num_full_attn_layers) {
+        if (g_metal && g_metal->attn_scores_pipe && fa_idx >= 0 && fa_idx < g_cfg.num_full_attn_layers &&
+            cache_pos < g_metal->gpu_kv_seq_len) {
             memcpy((float *)[g_metal->buf_kv_k[fa_idx] contents] + cache_pos * kv_dim,
                    k_out, kv_dim * sizeof(float));
             memcpy((float *)[g_metal->buf_kv_v[fa_idx] contents] + cache_pos * kv_dim,
@@ -7026,7 +7029,7 @@ static void fused_layer_forward(
         int gpu_attn_ready = (g_metal && g_metal->attn_scores_pipe &&
                               lc->o_kind != MATVEC_KIND_GGUF_Q8_0 &&
                               fa_idx >= 0 && fa_idx < g_cfg.num_full_attn_layers &&
-                              kv->len >= 32 && kv->len < GPU_KV_SEQ);
+                              kv->len >= 32 && kv->len <= g_metal->gpu_kv_seq_len);
 
         if (gpu_attn_ready) {
             // Copy Q and gate to GPU; attention dispatches will be in CMD2
@@ -7271,7 +7274,7 @@ static void fused_layer_forward(
     // because GPU command encoder overhead dominates at short sequences.
     int gpu_attn_fuse = (is_full && lc->o_kind != MATVEC_KIND_GGUF_Q8_0 &&
                          !attn_out_for_oproj && g_metal && g_metal->attn_scores_pipe
-                         && kv && kv->len >= 32 && kv->len < GPU_KV_SEQ);
+                         && kv && kv->len >= 32 && kv->len <= g_metal->gpu_kv_seq_len);
 
     int disable_fused_cmd2 = full_attn_force_cmd2_fallback() || shared_override_active;
 
@@ -7321,7 +7324,7 @@ static void fused_layer_forward(
             uint32_t hd = HEAD_DIM;
             uint32_t kvd = (uint32_t)kv_dim;
             uint32_t sl = (uint32_t)kv->len;
-            uint32_t seq_stride = GPU_KV_SEQ;
+            uint32_t seq_stride = (uint32_t)g_metal->gpu_kv_seq_len;
             uint32_t hpkv = (uint32_t)heads_per_kv;
 
             // Enc A1: attn_scores_batched
