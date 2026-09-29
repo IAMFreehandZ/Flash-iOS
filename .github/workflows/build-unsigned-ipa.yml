@@ -2,11 +2,20 @@ name: Build unsigned LiveContainer IPA
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ "codex/**" ]
+    paths:
+      - ".github/workflows/build-unsigned-ipa.yml"
+      - ".github/scripts/*generation-limits*"
+      - ".github/scripts/package-unsigned-ipa.sh"
+      - "FlashMoE-iOS/**"
+      - "metal_infer/**"
   pull_request:
     branches: [ "main" ]
     paths:
       - ".github/workflows/build-unsigned-ipa.yml"
       - ".github/scripts/package-unsigned-ipa.sh"
+      - ".github/scripts/*generation-limits*"
       - "FlashMoE-iOS/**"
       - "metal_infer/**"
 
@@ -27,9 +36,16 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
+      - name: Test generation context limits
+        run: |
+          clang -std=c11 -Wall -Wextra -Werror \
+            .github/scripts/test-generation-limits.c \
+            -o "$RUNNER_TEMP/test-generation-limits"
+          "$RUNNER_TEMP/test-generation-limits"
+
       - name: Build unsigned device app
         run: |
-          xcodebuild clean build \
+          xcodebuild clean build analyze \
             -project FlashMoE-iOS/FlashMoE.xcodeproj \
             -scheme FlashMoE \
             -configuration Release \

@@ -15,6 +15,7 @@
 #include "../../metal_infer/infer.m"
 
 #include "FlashMoEEngine.h"
+#include "FlashMoEGenerationLimits.h"
 #include <stdatomic.h>
 #include <os/proc.h>
 
@@ -677,12 +678,14 @@ int flashmoe_generate(
         }
 
         int K = ctx->K;
-        if (pt->count == 0 || (int64_t)pt->count + max_tokens + 1 > g_kv_seq_len) {
+        int output_budget = flashmoe_generation_budget(g_kv_seq_len, 0, pt->count, 0, max_tokens);
+        if (output_budget == 0) {
             snprintf(ctx->last_error, sizeof(ctx->last_error),
                      "Prompt and output exceed context capacity (%d positions)", g_kv_seq_len);
             free(pt->ids); free(pt);
             return -1;
         }
+        max_tokens = output_budget;
         int think_budget = flashmoe_effective_think_budget(max_tokens);
 
         // ---- Reset state for new generation ----
@@ -930,8 +933,9 @@ int flashmoe_generate_continuation(
         int closing_tokens = pending_is_eos ? 1 : 2;
 
         // Check we have room in the KV cache
-        if (pt->count == 0 ||
-            (int64_t)pos + closing_tokens + pt->count + max_tokens + 1 > g_kv_seq_len) {
+        int output_budget = flashmoe_generation_budget(g_kv_seq_len, pos, pt->count,
+                                                       closing_tokens, max_tokens);
+        if (output_budget == 0) {
             NSLog(@"[FlashMoE] Context full (position=%d, prompt=%d, output=%d, capacity=%d)",
                   pos, pt->count, max_tokens, g_kv_seq_len);
             free(pt->ids); free(pt);
@@ -940,6 +944,7 @@ int flashmoe_generate_continuation(
             snprintf(ctx->last_error, sizeof(ctx->last_error), "Context window full, reset required");
             return -2;  // Signal to caller: context full, need reset
         }
+        max_tokens = output_budget;
 
         // NOTE: No reset_delta_net_state() — reuse KV caches and linear attention state
         // Generation emits its final token before forwarding it. Consume that token

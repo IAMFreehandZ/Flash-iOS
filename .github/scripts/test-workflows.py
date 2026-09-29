@@ -34,7 +34,8 @@ workflow_files = sorted(path.name for path in WORKFLOWS.iterdir())
 assert workflow_files == ["build-unsigned-ipa.yml", "objective-c-xcode.yml"], workflow_files
 
 ipa = load_workflow("build-unsigned-ipa.yml")
-assert set(ipa["on"]) == {"workflow_dispatch", "pull_request"}
+assert set(ipa["on"]) == {"workflow_dispatch", "push", "pull_request"}
+assert ipa["on"]["push"]["branches"] == ["codex/**"]
 ipa_job = ipa["jobs"]["build-unsigned-ipa"]
 assert ipa_job["runs-on"] == "macos-26"
 assert ipa_job["env"]["DEVELOPER_DIR"].endswith("Xcode_26.6.app/Contents/Developer")
