@@ -15,6 +15,7 @@
 #include "../../metal_infer/infer.m"
 
 #include "FlashMoEEngine.h"
+#include "FlashMoEGenerationLimits.h"
 #include <stdatomic.h>
 #include <os/proc.h>
 
@@ -108,6 +109,7 @@ FlashMoEContext *flashmoe_create(void) {
     FlashMoEContext *ctx = calloc(1, sizeof(FlashMoEContext));
     if (!ctx) return NULL;
     ctx->loaded = 0;
+    ctx->pending_token = -1;
     atomic_store(&ctx->cancelled, 0);
     ctx->last_error[0] = '\0';
     return ctx;
@@ -142,10 +144,6 @@ int flashmoe_load(FlashMoEContext *ctx, const FlashMoEConfig *config) {
             load_config_from_manifest(manifest_path_buf);
         }
 
-        // Note: MAX_SEQ_LEN is a compile-time constant in infer.m.
-        // KV caches are allocated at MAX_SEQ_LEN. On iOS, context is
-        // effectively limited by available memory and max_tokens passed
-        // to flashmoe_generate(). No runtime capping needed here.
         // Suppress debug output for iOS
         g_stream_mode = 1;
 
@@ -345,6 +343,9 @@ int flashmoe_load(FlashMoEContext *ctx, const FlashMoEConfig *config) {
         build_layer_cache(ctx->wf);
 
         ctx->loaded = 1;
+        ctx->current_pos = 0;
+        ctx->turn_count = 0;
+        ctx->pending_token = -1;
         if (config->verbose) {
             NSLog(@"[FlashMoE] Model loaded: %d layers, %d experts (K=%d), hidden=%d",
                   g_cfg.num_layers, g_cfg.num_experts, ctx->K, HIDDEN_DIM);
@@ -609,13 +610,7 @@ static void flashmoe_clear_attention_state(FlashMoEContext *ctx) {
 }
 
 static int flashmoe_effective_think_budget(int max_tokens) {
-    if (g_think_budget <= 0) return 0;
-    // Keep up to half the output budget (at most 256 tokens) for the answer.
-    int answer_reserve = max_tokens / 2;
-    if (answer_reserve > 256) answer_reserve = 256;
-    int budget = max_tokens - answer_reserve - 1;  // reserve </think> too
-    if (budget < 1) budget = 1;
-    if (budget > g_think_budget) budget = g_think_budget;
+    int budget = flashmoe_thinking_budget(g_think_budget, max_tokens);
     NSLog(@"[gen] thinking budget=%d, output limit=%d", budget, max_tokens);
     return budget;
 }
@@ -648,6 +643,8 @@ static void flashmoe_feed_state_token(FlashMoEContext *ctx, int token, int *pos)
     }
     discard_deferred_experts();
     (*pos)++;
+    ctx->current_pos = *pos;
+    ctx->pending_token = -1;
 }
 
 int flashmoe_generate(
@@ -677,12 +674,15 @@ int flashmoe_generate(
         }
 
         int K = ctx->K;
-        if (pt->count == 0 || (int64_t)pt->count + max_tokens + 1 > g_kv_seq_len) {
+        int output_budget = flashmoe_generation_budget(g_kv_seq_len, 0, pt->count, 0, max_tokens);
+        if (output_budget == 0) {
             snprintf(ctx->last_error, sizeof(ctx->last_error),
-                     "Prompt and output exceed context capacity (%d positions)", g_kv_seq_len);
+                     "The prompt fills the %d-token context window. Start a new chat or increase Context Window in Models & Settings.",
+                     g_kv_seq_len);
             free(pt->ids); free(pt);
             return -1;
         }
+        max_tokens = output_budget;
         int think_budget = flashmoe_effective_think_budget(max_tokens);
 
         // ---- Reset state for new generation ----
@@ -727,12 +727,13 @@ int flashmoe_generate(
                 }
                 discard_deferred_experts();
                 pos++;
+                ctx->current_pos = pos;
 
                 // Report prefill progress via callback
                 double prefill_elapsed = now_ms() - prefill_start;
                 double prefill_tps = prefill_elapsed > 0 ? (token_idx + 1) * 1000.0 / prefill_elapsed : 0;
                 ctx->tokens_per_second = prefill_tps;
-                ctx->tokens_generated = -(token_idx + 1);  // negative = prefill in progress
+                // Progress uses negative callback counts; no output tokens exist yet.
                 if (callback) {
                     char prefill_status[64];
                     snprintf(prefill_status, sizeof(prefill_status),
@@ -766,6 +767,7 @@ int flashmoe_generate(
             }
             complete_deferred_experts();
             pos++;
+            ctx->current_pos = pos;
         }
 
         if (embed_batch) { free(embed_batch); embed_batch = NULL; }
@@ -786,6 +788,7 @@ int flashmoe_generate(
 
         // ---- Invoke callback for first token ----
         const char *token_text = decode_token(ctx->vocab, next_token);
+        ctx->pending_token = next_token;
         NSLog(@"[gen] token %d: id=%d text=\"%s\"", ctx->tokens_generated, next_token,
               token_text ? token_text : "(null)");
         if (callback) {
@@ -835,6 +838,7 @@ int flashmoe_generate(
             }
             complete_deferred_experts();
             pos++;
+            ctx->current_pos = pos;
 
             // Final norm + LM head
             if (ctx->final_norm_w) {
@@ -861,6 +865,7 @@ int flashmoe_generate(
 
             // Invoke callback
             token_text = decode_token(ctx->vocab, next_token);
+            ctx->pending_token = next_token;
             NSLog(@"[gen] token %d: id=%d text=\"%s\" (%.1f tok/s)",
                   ctx->tokens_generated, next_token,
                   token_text ? token_text : "(null)",
@@ -929,9 +934,10 @@ int flashmoe_generate_continuation(
         int pending_is_eos = pending_token == EOS_TOKEN_1 || pending_token == EOS_TOKEN_2;
         int closing_tokens = pending_is_eos ? 1 : 2;
 
-        // Check we have room in the KV cache
-        if (pt->count == 0 ||
-            (int64_t)pos + closing_tokens + pt->count + max_tokens + 1 > g_kv_seq_len) {
+        // Fit output into the remaining KV cache, accounting for the previous turn.
+        int output_budget = flashmoe_generation_budget(g_kv_seq_len, pos, pt->count,
+                                                       closing_tokens, max_tokens);
+        if (output_budget == 0) {
             NSLog(@"[FlashMoE] Context full (position=%d, prompt=%d, output=%d, capacity=%d)",
                   pos, pt->count, max_tokens, g_kv_seq_len);
             free(pt->ids); free(pt);
@@ -940,6 +946,7 @@ int flashmoe_generate_continuation(
             snprintf(ctx->last_error, sizeof(ctx->last_error), "Context window full, reset required");
             return -2;  // Signal to caller: context full, need reset
         }
+        max_tokens = output_budget;
 
         // NOTE: No reset_delta_net_state() — reuse KV caches and linear attention state
         // Generation emits its final token before forwarding it. Consume that token
@@ -980,6 +987,7 @@ int flashmoe_generate_continuation(
                 }
                 discard_deferred_experts();
                 pos++;
+                ctx->current_pos = pos;
             }
         }
 
@@ -1003,6 +1011,7 @@ int flashmoe_generate_continuation(
             }
             complete_deferred_experts();
             pos++;
+            ctx->current_pos = pos;
         }
 
         if (embed_batch) { free(embed_batch); embed_batch = NULL; }
@@ -1022,6 +1031,7 @@ int flashmoe_generate_continuation(
         ctx->tokens_generated = 1;
 
         const char *token_text = decode_token(ctx->vocab, next_token);
+        ctx->pending_token = next_token;
         if (callback) {
             double gen_time = now_ms() - t0 - ctx->ttft_ms;
             double tps = gen_time > 0 ? 1000.0 / gen_time : 0;
@@ -1062,6 +1072,7 @@ int flashmoe_generate_continuation(
             }
             complete_deferred_experts();
             pos++;
+            ctx->current_pos = pos;
 
             if (ctx->final_norm_w) {
                 float *normed = malloc(HIDDEN_DIM * sizeof(float));
@@ -1083,6 +1094,7 @@ int flashmoe_generate_continuation(
             ctx->tokens_per_second = elapsed_gen > 0 ? (ctx->tokens_generated - 1) * 1000.0 / elapsed_gen : 0;
 
             token_text = decode_token(ctx->vocab, next_token);
+            ctx->pending_token = next_token;
             if (callback) {
                 int stop = callback(token_text, next_token, ctx->tokens_generated,
                                     ctx->tokens_per_second, user_data);
@@ -1142,6 +1154,9 @@ void flashmoe_get_stats(FlashMoEContext *ctx, FlashMoEStats *stats) {
     memset(stats, 0, sizeof(FlashMoEStats));
 
     if (ctx->loaded) {
+        stats->context_capacity = g_kv_seq_len;
+        stats->context_used = atomic_load(&ctx->cancelled) ? 0 :
+            ctx->current_pos + (ctx->pending_token >= 0 ? 1 : 0);
         snprintf(stats->model_name, sizeof(stats->model_name), "%s",
                  g_model_path_for_tokenizer ? g_model_path_for_tokenizer : "unknown");
         stats->num_layers = g_cfg.num_layers;

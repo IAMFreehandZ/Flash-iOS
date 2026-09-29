@@ -33,7 +33,7 @@ typedef int (*FlashMoETokenCallback)(
 // ---- Configuration ----
 typedef struct {
     const char *model_path;     // Path to model directory (contains config.json, packed_experts/, etc.)
-    int max_context;            // Max sequence length (0 = use model default)
+    int max_context;            // Max sequence length (0 = use platform default)
     int think_budget;           // Max thinking tokens (0 = unlimited)
     int use_tiered;             // 1 = use tiered quantization if available, 0 = auto-detect
     int use_2bit;               // 1 = use 2-bit experts (packed_experts_2bit/)
@@ -72,6 +72,10 @@ typedef struct {
     size_t expert_file_bytes;   // Total expert data on disk
     size_t metal_buffer_bytes;  // GPU buffer allocation
     size_t expert_size_each;    // Single expert size in bytes
+
+    // Allocated context window and tokens currently occupying it
+    int context_capacity;
+    int context_used;
 } FlashMoEStats;
 
 // ---- Lifecycle ----

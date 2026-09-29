@@ -29,6 +29,7 @@ struct ChatView: View {
     @State private var isGenerating = false
     @State private var showStats = false
     @AppStorage("chatTemplateEnabled") private var chatTemplateEnabled: Bool = true
+    @AppStorage("maxOutputTokens") private var maxOutputTokens: Int = GenerationSettings.defaultOutputTokens
     @State private var showModelInfo = false
     @State private var showProfiler = false
     @FocusState private var inputFocused: Bool
@@ -55,6 +56,21 @@ struct ChatView: View {
                     }
                 }
             }
+
+            // Always show the allocated context window, including before the first turn.
+            HStack {
+                Label("Context", systemImage: "memorychip")
+                Spacer()
+                Text("\(engine.contextUsed.formatted()) / \(engine.contextCapacity.formatted()) tokens")
+                    .monospacedDigit()
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal)
+            .padding(.vertical, 6)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Context window")
+            .accessibilityValue("\(engine.contextUsed) of \(engine.contextCapacity) tokens used")
 
             // Stats bar
             if isGenerating || engine.tokensGenerated > 0 {
@@ -117,6 +133,7 @@ struct ChatView: View {
                         messages.removeAll()
                         engine.reset()
                     }
+                    .disabled(isGenerating)
                     Button(showProfiler ? "Hide Profiler" : "Profiler", systemImage: "gauge.with.dots.needle.50percent") {
                         showProfiler.toggle()
                     }
@@ -129,6 +146,7 @@ struct ChatView: View {
                         engine.reset()
                         engine.unloadModel()
                     }
+                    .disabled(isGenerating)
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
@@ -147,6 +165,7 @@ struct ChatView: View {
                         messages.removeAll()
                         engine.reset()
                     }
+                    .disabled(isGenerating)
                     Button(showProfiler ? "Hide Profiler" : "Profiler", systemImage: "gauge.with.dots.needle.50percent") {
                         showProfiler.toggle()
                     }
@@ -159,6 +178,7 @@ struct ChatView: View {
                         engine.reset()
                         engine.unloadModel()
                     }
+                    .disabled(isGenerating)
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
@@ -166,11 +186,21 @@ struct ChatView: View {
         }
 #endif
         .sheet(isPresented: $showModelInfo) {
-            ModelInfoSheet(info: engine.modelInfo)
+            ModelInfoSheet(info: engine.modelInfo, contextUsed: engine.contextUsed,
+                           contextCapacity: engine.contextCapacity)
+        }
+        .alert("Response unavailable", isPresented: Binding(
+            get: { engine.generationError != nil },
+            set: { if !$0 { engine.clearGenerationError() } }
+        )) {
+            Button("OK") { engine.clearGenerationError() }
+        } message: {
+            Text(engine.generationError ?? "")
         }
     }
 
     private func sendMessage() {
+        guard !isGenerating else { return }
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
 
@@ -183,17 +213,18 @@ struct ChatView: View {
         let assistantMessage = ChatMessage(role: .assistant, text: "", timestamp: Date())
         messages.append(assistantMessage)
         let assistantIndex = messages.count - 1
+        let outputBudget = maxOutputTokens
 
         Task {
             let stream: AsyncStream<GenerationToken>
 
             if engine.canContinue {
                 // Reuse KV cache — only process the new user turn
-                stream = engine.generateContinuation(userMessage: text, maxTokens: 500)
+                stream = engine.generateContinuation(userMessage: text, maxTokens: outputBudget)
             } else {
                 // First message — full chat template with system prompt
                 let formattedPrompt = buildChatPrompt(userMessage: text)
-                stream = engine.generate(prompt: formattedPrompt, maxTokens: 500)
+                stream = engine.generate(prompt: formattedPrompt, maxTokens: outputBudget)
             }
 
             var gotTokens = false
@@ -215,7 +246,7 @@ struct ChatView: View {
             if !gotTokens && engine.canContinue {
                 engine.reset()
                 let formattedPrompt = buildChatPrompt(userMessage: text)
-                let fallbackStream = engine.generate(prompt: formattedPrompt, maxTokens: 500)
+                let fallbackStream = engine.generate(prompt: formattedPrompt, maxTokens: outputBudget)
                 for await token in fallbackStream {
                     if token.tokensGenerated < 0 { continue }
                     let clean = token.text
@@ -412,6 +443,8 @@ struct StatsBar: View {
 
 struct ModelInfoSheet: View {
     let info: ModelInfo?
+    let contextUsed: Int
+    let contextCapacity: Int
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -446,6 +479,8 @@ struct ModelInfoSheet: View {
                     }
 
                     Section("Runtime") {
+                        InfoRow(label: "Context Window", value: "\(contextCapacity.formatted()) tokens")
+                        InfoRow(label: "Context Used", value: "\(contextUsed.formatted()) tokens")
                         InfoRow(label: "GPU Buffers", value: String(format: "%.0f MB", Double(info.metalBufferBytes) / 1_048_576))
                         InfoRow(label: "I/O per Token", value: String(format: "%.2f GB", info.expertSizeEachMB * Double(info.activeExpertsK) * Double(info.numLayers) / 1024))
                     }

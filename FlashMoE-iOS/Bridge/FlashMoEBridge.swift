@@ -10,6 +10,13 @@
 import Foundation
 import Observation
 
+enum GenerationSettings {
+    static let defaultContextTokens = 4096
+    static let defaultOutputTokens = 2048
+    static let contextOptions = [2048, 4096, 8192, 16384, 32768]
+    static let outputOptions = [512, 1024, 2048, 4096, 8192]
+}
+
 // MARK: - Data Types
 
 /// Generation result with streaming tokens
@@ -97,6 +104,9 @@ final class FlashMoEEngine: @unchecked Sendable {
     private(set) var tokensPerSecond: Double = 0
     private(set) var tokensGenerated: Int = 0
     private(set) var timeToFirstToken: Double = 0
+    private(set) var contextCapacity: Int = 0
+    private(set) var contextUsed: Int = 0
+    private(set) var generationError: String?
 
     /// Smoke test mode: model has fewer than 512 experts (degraded, skip chat template)
     var isSmoke: Bool { (modelInfo?.numExperts ?? 512) < 512 }
@@ -117,7 +127,7 @@ final class FlashMoEEngine: @unchecked Sendable {
     // MARK: - Model Loading
 
     /// Load a model from the given path. Runs on a background thread.
-    func loadModel(at path: String, maxContext: Int = 0, thinkBudget: Int = 2048,
+    func loadModel(at path: String, maxContext: Int = GenerationSettings.defaultContextTokens, thinkBudget: Int = 2048,
                    useTiered: Bool = false, use2bit: Bool = false,
                    cacheIOSplit: Int = 1, verbose: Bool = false) async throws {
         guard state != .loading && state != .generating else {
@@ -195,6 +205,9 @@ final class FlashMoEEngine: @unchecked Sendable {
 
                 DispatchQueue.main.async {
                     self.modelInfo = info
+                    self.contextCapacity = Int(stats.context_capacity)
+                    self.contextUsed = Int(stats.context_used)
+                    self.generationError = nil
                     self.state = .ready
                 }
                 continuation.resume()
@@ -209,13 +222,16 @@ final class FlashMoEEngine: @unchecked Sendable {
             flashmoe_unload(ctx)
         }
         modelInfo = nil
+        contextCapacity = 0
+        contextUsed = 0
+        generationError = nil
         state = .idle
     }
 
     // MARK: - Generation
 
     /// Generate tokens from a prompt, returning an AsyncStream of tokens
-    func generate(prompt: String, maxTokens: Int = 200) -> AsyncStream<GenerationToken> {
+    func generate(prompt: String, maxTokens: Int = GenerationSettings.defaultOutputTokens) -> AsyncStream<GenerationToken> {
         AsyncStream { continuation in
             guard let ctx = context, state == .ready else {
                 continuation.finish()
@@ -226,13 +242,14 @@ final class FlashMoEEngine: @unchecked Sendable {
                 self.state = .generating
                 self.tokensGenerated = 0
                 self.tokensPerSecond = 0
+                self.generationError = nil
                 self.isGenerating = true
             }
 
             // Set up cancellation
             nonisolated(unsafe) let ctxForCancel = ctx
-            continuation.onTermination = { @Sendable _ in
-                flashmoe_cancel(ctxForCancel)
+            continuation.onTermination = { @Sendable termination in
+                if case .cancelled = termination { flashmoe_cancel(ctxForCancel) }
             }
 
             engineQueue.async { [weak self] in
@@ -260,9 +277,13 @@ final class FlashMoEEngine: @unchecked Sendable {
 
                         // Update engine stats on main thread
                         if let engine = context.engine {
+                            var progress = FlashMoEStats()
+                            if let ctx = engine.context { flashmoe_get_stats(ctx, &progress) }
+                            let contextUsed = Int(progress.context_used)
                             DispatchQueue.main.async {
                                 engine.tokensGenerated = Int(tokensGenerated)
                                 engine.tokensPerSecond = tokensPerSecond
+                                engine.contextUsed = contextUsed
                             }
                         }
 
@@ -278,23 +299,25 @@ final class FlashMoEEngine: @unchecked Sendable {
                 // Get final stats
                 var stats = FlashMoEStats()
                 flashmoe_get_stats(ctx, &stats)
+                let error = result < 0 ? String(cString: flashmoe_last_error(ctx)) : nil
 
                 DispatchQueue.main.async {
                     self?.timeToFirstToken = stats.ttft_ms
                     self?.tokensPerSecond = stats.tokens_per_second
                     self?.tokensGenerated = Int(stats.tokens_generated)
+                    self?.contextUsed = Int(stats.context_used)
+                    self?.generationError = error
                     self?.state = .ready
                     self?.isGenerating = false
+                    continuation.finish()
                 }
-
-                continuation.finish()
             }
         }
     }
 
     /// Generate continuation — reuses KV cache from previous turns.
     /// Returns nil if context is full (caller should reset and use generate instead).
-    func generateContinuation(userMessage: String, maxTokens: Int = 200) -> AsyncStream<GenerationToken> {
+    func generateContinuation(userMessage: String, maxTokens: Int = GenerationSettings.defaultOutputTokens) -> AsyncStream<GenerationToken> {
         AsyncStream { continuation in
             guard let ctx = context, state == .ready else {
                 continuation.finish()
@@ -305,12 +328,13 @@ final class FlashMoEEngine: @unchecked Sendable {
                 self.state = .generating
                 self.tokensGenerated = 0
                 self.tokensPerSecond = 0
+                self.generationError = nil
                 self.isGenerating = true
             }
 
             nonisolated(unsafe) let ctxForCancel = ctx
-            continuation.onTermination = { @Sendable _ in
-                flashmoe_cancel(ctxForCancel)
+            continuation.onTermination = { @Sendable termination in
+                if case .cancelled = termination { flashmoe_cancel(ctxForCancel) }
             }
 
             engineQueue.async { [weak self] in
@@ -336,9 +360,13 @@ final class FlashMoEEngine: @unchecked Sendable {
                         )
 
                         if let engine = context.engine {
+                            var progress = FlashMoEStats()
+                            if let ctx = engine.context { flashmoe_get_stats(ctx, &progress) }
+                            let contextUsed = Int(progress.context_used)
                             DispatchQueue.main.async {
                                 engine.tokensGenerated = Int(tokensGenerated)
                                 engine.tokensPerSecond = tokensPerSecond
+                                engine.contextUsed = contextUsed
                             }
                         }
 
@@ -355,23 +383,25 @@ final class FlashMoEEngine: @unchecked Sendable {
                     DispatchQueue.main.async {
                         self?.state = .ready
                         self?.isGenerating = false
+                        continuation.finish()
                     }
-                    continuation.finish()
                     return
                 }
 
                 var stats = FlashMoEStats()
                 flashmoe_get_stats(ctx, &stats)
+                let error = result < 0 ? String(cString: flashmoe_last_error(ctx)) : nil
 
                 DispatchQueue.main.async {
                     self?.timeToFirstToken = stats.ttft_ms
                     self?.tokensPerSecond = stats.tokens_per_second
                     self?.tokensGenerated = Int(stats.tokens_generated)
+                    self?.contextUsed = Int(stats.context_used)
+                    self?.generationError = error
                     self?.state = .ready
                     self?.isGenerating = false
+                    continuation.finish()
                 }
-
-                continuation.finish()
             }
         }
     }
@@ -391,9 +421,17 @@ final class FlashMoEEngine: @unchecked Sendable {
     /// Reset conversation state (KV cache, attention state)
     func reset() {
         guard let ctx = context else { return }
+        contextUsed = 0
+        tokensGenerated = 0
+        tokensPerSecond = 0
+        generationError = nil
         engineQueue.async {
             flashmoe_reset(ctx)
         }
+    }
+
+    func clearGenerationError() {
+        generationError = nil
     }
 
     // MARK: - Model Validation
