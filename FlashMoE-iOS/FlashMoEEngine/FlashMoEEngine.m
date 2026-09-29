@@ -44,6 +44,7 @@ struct FlashMoEContext {
     // Conversation state (for KV cache reuse)
     int current_pos;               // sequence position for RoPE (persists across turns)
     int turn_count;                // 0 = fresh session, >0 = has history
+    int pending_token;             // last emitted token, not yet in attention state
 
     // Generation stats
     double tokens_per_second;
@@ -148,9 +149,7 @@ int flashmoe_load(FlashMoEContext *ctx, const FlashMoEConfig *config) {
         // Suppress debug output for iOS
         g_stream_mode = 1;
 
-        if (config->think_budget > 0) {
-            g_think_budget = config->think_budget;
-        }
+        g_think_budget = config->think_budget > 0 ? config->think_budget : 0;
 
         // Set quantization mode
         g_use_tiered = config->use_tiered;
@@ -595,6 +594,62 @@ void flashmoe_destroy(FlashMoEContext *ctx) {
 // Generation — the core inference loop adapted for callback-based streaming
 // ============================================================================
 
+static void flashmoe_clear_attention_state(FlashMoEContext *ctx) {
+    reset_delta_net_state();
+    for (int i = 0; i < g_cfg.num_layers; i++) {
+        if (ctx->kv_caches[i]) ctx->kv_caches[i]->len = 0;
+        LinearAttnState *state = ctx->layer_states[i];
+        if (state) {
+            memset(state->conv_state, 0,
+                   (CONV_KERNEL_SIZE - 1) * LINEAR_CONV_DIM * sizeof(float));
+            memset(state->ssm_state, 0,
+                   LINEAR_NUM_V_HEADS * LINEAR_VALUE_DIM * LINEAR_KEY_DIM * sizeof(float));
+        }
+    }
+}
+
+static int flashmoe_effective_think_budget(int max_tokens) {
+    if (g_think_budget <= 0) return 0;
+    // Keep up to half the output budget (at most 256 tokens) for the answer.
+    int answer_reserve = max_tokens / 2;
+    if (answer_reserve > 256) answer_reserve = 256;
+    int budget = max_tokens - answer_reserve - 1;  // reserve </think> too
+    if (budget < 1) budget = 1;
+    if (budget > g_think_budget) budget = g_think_budget;
+    NSLog(@"[gen] thinking budget=%d, output limit=%d", budget, max_tokens);
+    return budget;
+}
+
+static void flashmoe_store_turn(FlashMoEContext *ctx, int pos, int pending_token,
+                               int completed_turns) {
+    if (atomic_load(&ctx->cancelled)) {
+        // A cancelled turn may contain only part of its prompt or response.
+        ctx->turn_count = 0;
+        ctx->current_pos = 0;
+        ctx->pending_token = -1;
+        return;
+    }
+    ctx->current_pos = pos;
+    ctx->pending_token = pending_token;
+    ctx->turn_count = completed_turns + 1;
+    NSLog(@"[gen] cached turn=%d, position=%d, pending token=%d",
+          ctx->turn_count, pos, pending_token);
+}
+
+static void flashmoe_feed_state_token(FlashMoEContext *ctx, int token, int *pos) {
+    embed_lookup(ctx->wf, token, ctx->hidden);
+    for (int layer = 0; layer < g_cfg.num_layers; layer++) {
+        int is_full = ((layer + 1) % FULL_ATTN_INTERVAL == 0);
+        fused_layer_forward(ctx->wf, layer, ctx->hidden,
+                            is_full ? ctx->kv_caches[layer] : NULL,
+                            is_full ? NULL : ctx->layer_states[layer], *pos,
+                            ctx->layer_mmaps[layer] != MAP_FAILED ? ctx->layer_mmaps[layer] : NULL,
+                            ctx->K, ctx->layer_fds[layer]);
+    }
+    discard_deferred_experts();
+    (*pos)++;
+}
+
 int flashmoe_generate(
     FlashMoEContext *ctx,
     const char *prompt,
@@ -602,7 +657,7 @@ int flashmoe_generate(
     FlashMoETokenCallback callback,
     void *user_data
 ) {
-    if (!ctx || !ctx->loaded || !prompt) {
+    if (!ctx || !ctx->loaded || !prompt || max_tokens <= 0) {
         if (ctx) snprintf(ctx->last_error, sizeof(ctx->last_error), "Engine not loaded or invalid arguments");
         return -1;
     }
@@ -622,15 +677,20 @@ int flashmoe_generate(
         }
 
         int K = ctx->K;
+        if (pt->count == 0 || (int64_t)pt->count + max_tokens + 1 > g_kv_seq_len) {
+            snprintf(ctx->last_error, sizeof(ctx->last_error),
+                     "Prompt and output exceed context capacity (%d positions)", g_kv_seq_len);
+            free(pt->ids); free(pt);
+            return -1;
+        }
+        int think_budget = flashmoe_effective_think_budget(max_tokens);
 
         // ---- Reset state for new generation ----
-        reset_delta_net_state();
-        // Reset KV cache lengths
-        for (int i = 0; i < g_cfg.num_layers; i++) {
-            if (ctx->kv_caches[i]) {
-                ctx->kv_caches[i]->len = 0;
-            }
-        }
+        discard_deferred_experts();
+        flashmoe_clear_attention_state(ctx);
+        ctx->turn_count = 0;
+        ctx->current_pos = 0;
+        ctx->pending_token = -1;
 
         int pos = 0;
 
@@ -735,6 +795,7 @@ int flashmoe_generate(
             if (stop) {
                 free(pt->ids); free(pt);
                 ctx->total_time_ms = now_ms() - t0;
+                flashmoe_store_turn(ctx, pos, next_token, 0);
                 return ctx->tokens_generated;
             }
         }
@@ -787,7 +848,7 @@ int flashmoe_generate(
             next_token = cpu_argmax(ctx->logits, VOCAB_SIZE);
 
             // Think budget: force end thinking
-            if (in_think && g_think_budget > 0 && think_tokens >= g_think_budget) {
+            if (in_think && think_budget > 0 && think_tokens >= think_budget) {
                 next_token = THINK_END_TOKEN;
                 in_think = 0;
             }
@@ -818,8 +879,7 @@ int flashmoe_generate(
         }
 
         // Persist state for KV cache reuse in next turn
-        ctx->current_pos = pos;
-        ctx->turn_count++;
+        flashmoe_store_turn(ctx, pos, next_token, 0);
 
         free(pt->ids);
         free(pt);
@@ -839,7 +899,7 @@ int flashmoe_generate_continuation(
     FlashMoETokenCallback callback,
     void *user_data
 ) {
-    if (!ctx || !ctx->loaded || !user_content) {
+    if (!ctx || !ctx->loaded || !user_content || max_tokens <= 0) {
         if (ctx) snprintf(ctx->last_error, sizeof(ctx->last_error), "Engine not loaded or invalid arguments");
         return -1;
     }
@@ -864,11 +924,16 @@ int flashmoe_generate_continuation(
 
         int K = ctx->K;
         int pos = ctx->current_pos;  // Resume from where we left off
+        int completed_turns = ctx->turn_count;
+        int pending_token = ctx->pending_token;
+        int pending_is_eos = pending_token == EOS_TOKEN_1 || pending_token == EOS_TOKEN_2;
+        int closing_tokens = pending_is_eos ? 1 : 2;
 
         // Check we have room in the KV cache
-        if (pos + pt->count + max_tokens > MAX_SEQ_LEN) {
-            NSLog(@"[FlashMoE] Context full (%d + %d + %d > %d), resetting to fresh generation",
-                  pos, pt->count, max_tokens, MAX_SEQ_LEN);
+        if (pt->count == 0 ||
+            (int64_t)pos + closing_tokens + pt->count + max_tokens + 1 > g_kv_seq_len) {
+            NSLog(@"[FlashMoE] Context full (position=%d, prompt=%d, output=%d, capacity=%d)",
+                  pos, pt->count, max_tokens, g_kv_seq_len);
             free(pt->ids); free(pt);
             // Fall back to full generation with chat template
             // Caller should handle this by using flashmoe_generate instead
@@ -877,6 +942,12 @@ int flashmoe_generate_continuation(
         }
 
         // NOTE: No reset_delta_net_state() — reuse KV caches and linear attention state
+        // Generation emits its final token before forwarding it. Consume that token
+        // and close a response stopped by the output limit before starting the user turn.
+        ctx->turn_count = 0;  // invalidate partial state if continuation is cancelled
+        flashmoe_feed_state_token(ctx, pending_token, &pos);
+        if (!pending_is_eos) flashmoe_feed_state_token(ctx, EOS_TOKEN_2, &pos);
+        int think_budget = flashmoe_effective_think_budget(max_tokens);
 
         // ---- Prefill continuation tokens ----
         float *embed_batch = NULL;
@@ -957,8 +1028,8 @@ int flashmoe_generate_continuation(
             int stop = callback(token_text, next_token, ctx->tokens_generated, tps, user_data);
             if (stop) {
                 free(pt->ids); free(pt);
-                ctx->current_pos = pos;
                 ctx->total_time_ms = now_ms() - t0;
+                flashmoe_store_turn(ctx, pos, next_token, completed_turns);
                 return ctx->tokens_generated;
             }
         }
@@ -1002,7 +1073,7 @@ int flashmoe_generate_continuation(
             lm_head_forward(ctx->wf, ctx->hidden, ctx->logits);
             next_token = cpu_argmax(ctx->logits, VOCAB_SIZE);
 
-            if (in_think && g_think_budget > 0 && think_tokens >= g_think_budget) {
+            if (in_think && think_budget > 0 && think_tokens >= think_budget) {
                 next_token = THINK_END_TOKEN;
                 in_think = 0;
             }
@@ -1025,8 +1096,7 @@ int flashmoe_generate_continuation(
             ctx->tokens_per_second = (ctx->tokens_generated - 1) * 1000.0 / gen_elapsed;
         }
 
-        ctx->current_pos = pos;
-        ctx->turn_count++;
+        flashmoe_store_turn(ctx, pos, next_token, completed_turns);
 
         free(pt->ids);
         free(pt);
@@ -1051,19 +1121,12 @@ void flashmoe_reset(FlashMoEContext *ctx) {
             g_deferred.cmd_experts = nil;
         }
 
-        // Reset delta-net state
-        reset_delta_net_state();
-
-        // Reset KV caches
-        for (int i = 0; i < g_cfg.num_layers; i++) {
-            if (ctx->kv_caches[i]) {
-                ctx->kv_caches[i]->len = 0;
-            }
-        }
+        flashmoe_clear_attention_state(ctx);
 
         // Reset conversation position
         ctx->current_pos = 0;
         ctx->turn_count = 0;
+        ctx->pending_token = -1;
 
         // Reset stats
         ctx->tokens_generated = 0;

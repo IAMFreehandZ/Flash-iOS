@@ -628,6 +628,24 @@ static inline size_t active_expert_size(void) {
     return expert_layout_for_kind(active_expert_quant_kind()).expert_size;
 }
 
+static inline void expert_read_range(int layer, int expert, off_t *offset, size_t *size) {
+    if (g_use_tiered && g_tiered_manifest) {
+        const TieredExpertInfo *ti = &TIERED(layer, expert);
+        *offset = (off_t)ti->offset;
+        *size = ti->size;
+    } else {
+        *size = active_expert_size();
+        *offset = (off_t)expert * *size;
+    }
+}
+
+static int expert_read_succeeded(int layer, int expert, ssize_t result, size_t size) {
+    if (result == (ssize_t)size) return 1;
+    fprintf(stderr, "WARNING: layer %d expert %d pread: expected %zu bytes, got %zd bytes\n",
+            layer, expert, size, result);
+    return 0;
+}
+
 static inline size_t layer_expert_size(int layer) {
     return expert_layout_for_kind(layer_expert_quant_kind(layer)).expert_size;
 }
@@ -1976,6 +1994,41 @@ static void cpu_dequant_matvec(
     }
 }
 
+// 2-bit affine matvec: 16 values per uint32, with bfloat16 scales/biases.
+static void cpu_dequant_matvec_2bit(
+    const uint32_t *W, const uint16_t *scales, const uint16_t *biases,
+    const float *x, float *out,
+    int out_dim, int in_dim, int group_size
+) {
+    int num_groups = in_dim / group_size;
+    int packed_per_group = group_size / 16;
+    int packed_cols = in_dim / 16;
+
+    for (int row = 0; row < out_dim; row++) {
+        float acc = 0.0f;
+        const uint32_t *w_row = W + row * packed_cols;
+        const uint16_t *s_row = scales + row * num_groups;
+        const uint16_t *b_row = biases + row * num_groups;
+
+        for (int g = 0; g < num_groups; g++) {
+            float scale = bf16_to_f32(s_row[g]);
+            float bias = bf16_to_f32(b_row[g]);
+            int base_packed = g * packed_per_group;
+            int base_x = g * group_size;
+
+            for (int p = 0; p < packed_per_group; p++) {
+                uint32_t packed = w_row[base_packed + p];
+                int x_base = base_x + p * 16;
+                for (int n = 0; n < 16; n++) {
+                    uint32_t value = (packed >> (n * 2)) & 0x3;
+                    acc += ((float)value * scale + bias) * x[x_base + n];
+                }
+            }
+        }
+        out[row] = acc;
+    }
+}
+
 // GGUF Q6_K dequant matvec: out[out_dim] = W_q6_k * x[in_dim]
 // Mirrors llama.cpp's exact block layout and starts with the LM head only.
 static void cpu_q6_k_matvec(
@@ -2236,9 +2289,13 @@ static void cpu_swiglu(const float *gate, const float *up, float *out, int dim);
 static void cpu_forward_expert_blob(
     const void *expert_data,
     const float *input,
-    float *expert_out
+    float *expert_out,
+    ExpertQuantKind quant_kind
 ) {
-    const ExpertLayout layout = expert_layout_for_kind(active_expert_quant_kind());
+    const ExpertLayout layout = expert_layout_for_kind(quant_kind);
+    void (*affine_matvec)(const uint32_t *, const uint16_t *, const uint16_t *,
+                          const float *, float *, int, int, int) =
+        (quant_kind == EXPERT_QUANT_2BIT) ? cpu_dequant_matvec_2bit : cpu_dequant_matvec;
     const void *gate_w = (const char *)expert_data + layout.gate_w_off;
     const void *up_w = (const char *)expert_data + layout.up_w_off;
     const uint32_t *down_w = (const uint32_t *)((const char *)expert_data + layout.down_w_off);
@@ -2256,7 +2313,7 @@ static void cpu_forward_expert_blob(
         cpu_iq4_xs_matvec((const GGUFBlockIQ4XS *)gate_w, input, gate_proj_out,
                           MOE_INTERMEDIATE, HIDDEN_DIM);
     } else {
-        cpu_dequant_matvec((const uint32_t *)gate_w,
+        affine_matvec((const uint32_t *)gate_w,
                            (const uint16_t *)((const char *)expert_data + layout.gate_s_off),
                            (const uint16_t *)((const char *)expert_data + layout.gate_b_off),
                            input, gate_proj_out, MOE_INTERMEDIATE, HIDDEN_DIM, GROUP_SIZE);
@@ -2269,7 +2326,7 @@ static void cpu_forward_expert_blob(
         cpu_iq4_xs_matvec((const GGUFBlockIQ4XS *)up_w, input, up_proj_out,
                           MOE_INTERMEDIATE, HIDDEN_DIM);
     } else {
-        cpu_dequant_matvec((const uint32_t *)up_w,
+        affine_matvec((const uint32_t *)up_w,
                            (const uint16_t *)((const char *)expert_data + layout.up_s_off),
                            (const uint16_t *)((const char *)expert_data + layout.up_b_off),
                            input, up_proj_out, MOE_INTERMEDIATE, HIDDEN_DIM, GROUP_SIZE);
@@ -2280,7 +2337,7 @@ static void cpu_forward_expert_blob(
         cpu_q5_k_matvec((const GGUFBlockQ5K *)((const char *)expert_data + layout.down_w_off),
                         act_out, expert_out, HIDDEN_DIM, MOE_INTERMEDIATE);
     } else {
-        cpu_dequant_matvec(down_w, down_s, down_b, act_out, expert_out,
+        affine_matvec(down_w, down_s, down_b, act_out, expert_out,
                            HIDDEN_DIM, MOE_INTERMEDIATE, GROUP_SIZE);
     }
 
@@ -2562,7 +2619,8 @@ typedef struct {
     id<MTLBuffer> buf_kv_k[16];  // K cache per full-attn layer (max 16)
     id<MTLBuffer> buf_kv_v[16];  // V cache per full-attn layer (max 16)
     id<MTLBuffer> buf_attn_q;       // [NUM_ATTN_HEADS * HEAD_DIM floats] all query heads
-    id<MTLBuffer> buf_attn_scores;  // [NUM_ATTN_HEADS * MAX_SEQ_LEN floats] all heads' scores
+    id<MTLBuffer> buf_attn_scores;  // [NUM_ATTN_HEADS * gpu_kv_seq_len floats]
+    int gpu_kv_seq_len;            // allocated GPU KV capacity and score row stride
     id<MTLBuffer> buf_attn_out;     // [NUM_ATTN_HEADS * HEAD_DIM floats] full attention output
     id<MTLBuffer> buf_attn_gate;    // [NUM_ATTN_HEADS * HEAD_DIM floats] sigmoid gate
     // CMD3 GPU-side combine buffers (weighted_sum + residual + norm on GPU)
@@ -2859,6 +2917,7 @@ static MetalCtx *metal_setup(void) {
     {
         size_t kv_dim = NUM_KV_HEADS * HEAD_DIM;  // 512
         int gpu_kv = (g_kv_seq_len < GPU_KV_SEQ) ? g_kv_seq_len : GPU_KV_SEQ;
+        ctx->gpu_kv_seq_len = gpu_kv;
         size_t kv_cache_size = (size_t)gpu_kv * kv_dim * sizeof(float);
         for (int i = 0; i < g_cfg.num_full_attn_layers; i++) {
             ctx->buf_kv_k[i] = [ctx->device newBufferWithLength:kv_cache_size
@@ -4020,9 +4079,9 @@ static void gpu_expert_forward(
     const void *expert_data,     // EXPERT_SIZE bytes (may be buf_expert_data contents)
     const float *h_post,         // [HIDDEN_DIM] input
     float *expert_out,           // [HIDDEN_DIM] output
-    int expert_data_already_in_buffer
+    int expert_data_already_in_buffer,
+    ExpertQuantKind quant_kind
 ) {
-    ExpertQuantKind quant_kind = active_expert_quant_kind();
     ExpertLayout layout = expert_layout_for_kind(quant_kind);
     id<MTLComputePipelineState> gate_pipe = expert_pipe_for_projection(ctx, quant_kind, layout.gate_kind);
     id<MTLComputePipelineState> up_pipe = expert_pipe_for_projection(ctx, quant_kind, layout.up_kind);
@@ -4030,7 +4089,7 @@ static void gpu_expert_forward(
 
     // Copy expert weights into Metal buffer only if not already there
     if (!expert_data_already_in_buffer) {
-        memcpy([ctx->buf_expert_data contents], expert_data, active_expert_size());
+        memcpy([ctx->buf_expert_data contents], expert_data, layout.expert_size);
     }
     memcpy([ctx->buf_expert_input contents], h_post, HIDDEN_DIM * sizeof(float));
 
@@ -4977,34 +5036,34 @@ static void moe_forward(
     if (packed_fd >= 0) {
         float *expert_out = malloc(HIDDEN_DIM * sizeof(float));
 
-        size_t esz = active_expert_size();
         for (int k = 0; k < K; k++) {
             int eidx = expert_indices[k];
-            off_t expert_offset = (off_t)eidx * esz;
+            size_t esz;
+            off_t expert_offset;
+            expert_read_range(layer_idx, eidx, &expert_offset, &esz);
+            ExpertQuantKind quant_kind = (g_use_tiered && g_tiered_manifest)
+                ? tiered_expert_quant_kind(layer_idx, eidx) : active_expert_quant_kind();
 
             if (g_metal && g_metal->buf_expert_data) {
                 // GPU path: pread directly into Metal buffer, run gate+up+swiglu+down on GPU
                 void *expert_buf_ptr = [g_metal->buf_expert_data contents];
                 ssize_t nread = pread(packed_fd, expert_buf_ptr, esz, expert_offset);
-                if (nread != (ssize_t)esz) {
-                    fprintf(stderr, "WARNING: layer %d expert %d pread: %zd/%zu\n",
-                            layer_idx, eidx, nread, esz);
+                if (!expert_read_succeeded(layer_idx, eidx, nread, esz)) {
                     continue;
                 }
 
-                gpu_expert_forward(g_metal, expert_buf_ptr, h_post, expert_out, 1 /*already in buffer*/);
+                gpu_expert_forward(g_metal, expert_buf_ptr, h_post, expert_out,
+                                   1 /*already in buffer*/, quant_kind);
             } else {
                 // CPU fallback
                 void *expert_data = malloc(esz);
                 ssize_t nread = pread(packed_fd, expert_data, esz, expert_offset);
-                if (nread != (ssize_t)esz) {
-                    fprintf(stderr, "WARNING: layer %d expert %d pread: %zd/%zu\n",
-                            layer_idx, eidx, nread, esz);
+                if (!expert_read_succeeded(layer_idx, eidx, nread, esz)) {
                     free(expert_data);
                     continue;
                 }
 
-                cpu_forward_expert_blob(expert_data, h_post, expert_out);
+                cpu_forward_expert_blob(expert_data, h_post, expert_out, quant_kind);
                 free(expert_data);
             }
 
@@ -5349,6 +5408,8 @@ typedef struct {
     int num_experts;
     int chunks_per_expert;
     int generation;
+    int layer_idx;
+    int expert_indices[MAX_K];
     int valid[MAX_K];
     int active;
 } AsyncPreadState;
@@ -5365,20 +5426,15 @@ static void async_pread_start(int packed_fd, int *expert_indices, int K,
     g_async_pread.num_experts = K;
     g_async_pread.chunks_per_expert = chunks;
     g_async_pread.num_tasks = K * chunks;
+    g_async_pread.layer_idx = layer_idx;
     g_async_pread.active = 1;
 
     for (int k = 0; k < K; k++) {
         // Per-expert offset and size (tiered: variable, uniform: computed from index)
         size_t this_esz;
         off_t this_offset;
-        if (g_use_tiered && g_tiered_manifest) {
-            TieredExpertInfo *ti = &TIERED(layer_idx, expert_indices[k]);
-            this_esz = ti->size;
-            this_offset = (off_t)ti->offset;
-        } else {
-            this_esz = esz;
-            this_offset = (off_t)expert_indices[k] * esz;
-        }
+        expert_read_range(layer_idx, expert_indices[k], &this_offset, &this_esz);
+        g_async_pread.expert_indices[k] = expert_indices[k];
 
         size_t total_pages = (chunks > 1) ? (this_esz / page_bytes) : 0;
         char *dst_base = (char *)[dst_bufs[k] contents];
@@ -5391,6 +5447,8 @@ static void async_pread_start(int packed_fd, int *expert_indices, int K,
                 if ((size_t)c < (total_pages % (size_t)chunks)) pages_this_chunk++;
                 chunk_off = page_cursor * page_bytes;
                 chunk_sz = pages_this_chunk * page_bytes;
+                // Include any trailing bytes in a variable-size tiered blob.
+                if (c == chunks - 1) chunk_sz += this_esz % page_bytes;
                 page_cursor += pages_this_chunk;
             }
 
@@ -5413,16 +5471,19 @@ static void async_pread_start(int packed_fd, int *expert_indices, int K,
 static void async_pread_wait(void) {
     if (!g_async_pread.active) return;
     io_pool_wait_generation(g_async_pread.generation);
-    size_t esz = active_expert_size();
     for (int k = 0; k < g_async_pread.num_experts; k++) {
-        ssize_t total = 0;
+        int ok = 1;
         for (int c = 0; c < g_async_pread.chunks_per_expert; c++) {
             int task_idx = k * g_async_pread.chunks_per_expert + c;
-            if (g_async_pread.tasks[task_idx].result > 0) {
-                total += g_async_pread.tasks[task_idx].result;
+            InferPreadTask *task = &g_async_pread.tasks[task_idx];
+            if (!expert_read_succeeded(g_async_pread.layer_idx,
+                                       g_async_pread.expert_indices[k],
+                                       task->result, task->size)) {
+                ok = 0;
+                break;
             }
         }
-        g_async_pread.valid[k] = (total == (ssize_t)esz);
+        g_async_pread.valid[k] = ok;
     }
     g_async_pread.active = 0;
 }
@@ -5448,15 +5509,14 @@ static int parallel_pread_experts(
     int *expert_indices,
     int K,
     int *valid,  // [MAX_K] output: 1 if expert loaded successfully
-    const void *mmap_base  // mmap'd layer file (NULL to use pread)
+    const void *mmap_base,  // mmap'd layer file (NULL to use pread)
+    int layer_idx
 ) {
-    size_t esz = active_expert_size();
-    InferPreadTask tasks[MAX_K];
+    InferPreadTask tasks[MAX_K] = {0};
     for (int k = 0; k < K; k++) {
         tasks[k].fd = packed_fd;
         tasks[k].dst = [g_metal->buf_multi_expert_data[k] contents];
-        tasks[k].offset = (off_t)expert_indices[k] * esz;
-        tasks[k].size = esz;
+        expert_read_range(layer_idx, expert_indices[k], &tasks[k].offset, &tasks[k].size);
         tasks[k].result = 0;
         tasks[k].mmap_base = mmap_base;
     }
@@ -5465,12 +5525,9 @@ static int parallel_pread_experts(
 
     int loaded = 0;
     for (int k = 0; k < K; k++) {
-        valid[k] = (tasks[k].result == (ssize_t)esz);
+        valid[k] = expert_read_succeeded(layer_idx, expert_indices[k],
+                                         tasks[k].result, tasks[k].size);
         if (valid[k]) loaded++;
-        else {
-            fprintf(stderr, "WARNING: expert %d pread: %zd/%zu\n",
-                    expert_indices[k], tasks[k].result, esz);
-        }
     }
     return loaded;
 }
@@ -5484,15 +5541,14 @@ static int parallel_pread_experts_into(
     int *expert_indices,
     int K,
     id<MTLBuffer> __strong *dst_bufs,  // target Metal buffers (set A or B)
-    int *valid  // [MAX_K] output: 1 if expert loaded successfully
+    int *valid,  // [MAX_K] output: 1 if expert loaded successfully
+    int layer_idx
 ) {
-    size_t esz = active_expert_size();
-    InferPreadTask tasks[MAX_K];
+    InferPreadTask tasks[MAX_K] = {0};
     for (int k = 0; k < K; k++) {
         tasks[k].fd = packed_fd;
         tasks[k].dst = [dst_bufs[k] contents];
-        tasks[k].offset = (off_t)expert_indices[k] * esz;
-        tasks[k].size = esz;
+        expert_read_range(layer_idx, expert_indices[k], &tasks[k].offset, &tasks[k].size);
         tasks[k].result = 0;
     }
 
@@ -5500,12 +5556,9 @@ static int parallel_pread_experts_into(
 
     int loaded = 0;
     for (int k = 0; k < K; k++) {
-        valid[k] = (tasks[k].result == (ssize_t)esz);
+        valid[k] = expert_read_succeeded(layer_idx, expert_indices[k],
+                                         tasks[k].result, tasks[k].size);
         if (valid[k]) loaded++;
-        else {
-            fprintf(stderr, "WARNING: expert %d pread: %zd/%zu\n",
-                    expert_indices[k], tasks[k].result, esz);
-        }
     }
     return loaded;
 }
@@ -5841,6 +5894,9 @@ static void malloc_cache_free(MallocExpertCache *cache) {
 typedef struct {
     void *dst[MAX_K];       // raw pointers from [buf contents] (no ARC)
     off_t offset[MAX_K];    // file offsets per expert
+    size_t size[MAX_K];     // requested bytes per expert
+    int layer_idx;
+    int expert_indices[MAX_K];
     int K;                  // number of experts
     int fd;                 // file descriptor for this layer
     int valid[MAX_K];       // output: 1 if pread succeeded
@@ -5872,14 +5928,13 @@ static void *infer_prefetch_thread_fn(void *arg) {
         pthread_mutex_unlock(&pf->mutex);
 
         // Execute parallel pread (pure C, no ARC objects)
-        size_t esz = active_expert_size();
         InferIOPlan *plan = &pf->plan;
-        InferPreadTask tasks[MAX_K];
+        InferPreadTask tasks[MAX_K] = {0};
         for (int k = 0; k < plan->K; k++) {
             tasks[k].fd = plan->fd;
             tasks[k].dst = plan->dst[k];
             tasks[k].offset = plan->offset[k];
-            tasks[k].size = esz;
+            tasks[k].size = plan->size[k];
             tasks[k].result = 0;
         }
 
@@ -5887,7 +5942,8 @@ static void *infer_prefetch_thread_fn(void *arg) {
 
         plan->loaded = 0;
         for (int k = 0; k < plan->K; k++) {
-            plan->valid[k] = (tasks[k].result == (ssize_t)esz);
+            plan->valid[k] = expert_read_succeeded(plan->layer_idx, plan->expert_indices[k],
+                                                 tasks[k].result, tasks[k].size);
             if (plan->valid[k]) plan->loaded++;
         }
 
@@ -5905,15 +5961,16 @@ static void *infer_prefetch_thread_fn(void *arg) {
 // then signal background prefetch thread.
 static void infer_prefetch_start(InferPrefetchCtx *pf, int packed_fd,
                                   int *expert_indices, int K,
-                                  id<MTLBuffer> __strong *dst_bufs) {
+                                  id<MTLBuffer> __strong *dst_bufs, int layer_idx) {
     pthread_mutex_lock(&pf->mutex);
-    size_t esz = active_expert_size();
     InferIOPlan *plan = &pf->plan;
     plan->fd = packed_fd;
     plan->K = K;
+    plan->layer_idx = layer_idx;
     for (int k = 0; k < K; k++) {
         plan->dst[k] = [dst_bufs[k] contents];
-        plan->offset[k] = (off_t)expert_indices[k] * esz;
+        plan->expert_indices[k] = expert_indices[k];
+        expert_read_range(layer_idx, expert_indices[k], &plan->offset[k], &plan->size[k]);
         plan->valid[k] = 0;
     }
     plan->loaded = 0;
@@ -6796,7 +6853,6 @@ static void fused_layer_forward(
             g_io_gcd_queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
 
         // Check cache for each predicted expert, start async I/O for misses
-        size_t spec_esz = active_expert_size();
         if (g_malloc_cache) {
             spec_group = dispatch_group_create();
             for (int k = 0; k < spec_K; k++) {
@@ -6808,10 +6864,12 @@ static void fused_layer_forward(
                     if (buf && cidx >= 0) {
                         int fd_copy = packed_fd;
                         void *dst = g_malloc_cache->data[cidx];
-                        off_t offset = (off_t)eidx * spec_esz;
-                        size_t sz = spec_esz;
+                        off_t offset;
+                        size_t sz;
+                        expert_read_range(layer_idx, eidx, &offset, &sz);
                         dispatch_group_async(spec_group, g_io_gcd_queue, ^{
-                            pread(fd_copy, dst, sz, offset);
+                            ssize_t nr = pread(fd_copy, dst, sz, offset);
+                            expert_read_succeeded(layer_idx, eidx, nr, sz);
                         });
                         spec_preload_count++;
                         g_spec_route_preloads++;
@@ -6828,10 +6886,12 @@ static void fused_layer_forward(
                     if (buf) {
                         int fd_copy = packed_fd;
                         void *dst = [buf contents];
-                        off_t offset = (off_t)eidx * spec_esz;
-                        size_t sz = spec_esz;
+                        off_t offset;
+                        size_t sz;
+                        expert_read_range(layer_idx, eidx, &offset, &sz);
                         dispatch_group_async(spec_group, g_io_gcd_queue, ^{
-                            pread(fd_copy, dst, sz, offset);
+                            ssize_t nr = pread(fd_copy, dst, sz, offset);
+                            expert_read_succeeded(layer_idx, eidx, nr, sz);
                         });
                         spec_preload_count++;
                         g_spec_route_preloads++;
@@ -6949,7 +7009,8 @@ static void fused_layer_forward(
         memcpy(kv->v_cache + cache_pos * kv_dim, v_out, kv_dim * sizeof(float));
 
         int fa_idx = (layer_idx + 1) / FULL_ATTN_INTERVAL - 1;
-        if (g_metal && g_metal->attn_scores_pipe && fa_idx >= 0 && fa_idx < g_cfg.num_full_attn_layers) {
+        if (g_metal && g_metal->attn_scores_pipe && fa_idx >= 0 && fa_idx < g_cfg.num_full_attn_layers &&
+            cache_pos < g_metal->gpu_kv_seq_len) {
             memcpy((float *)[g_metal->buf_kv_k[fa_idx] contents] + cache_pos * kv_dim,
                    k_out, kv_dim * sizeof(float));
             memcpy((float *)[g_metal->buf_kv_v[fa_idx] contents] + cache_pos * kv_dim,
@@ -6968,7 +7029,7 @@ static void fused_layer_forward(
         int gpu_attn_ready = (g_metal && g_metal->attn_scores_pipe &&
                               lc->o_kind != MATVEC_KIND_GGUF_Q8_0 &&
                               fa_idx >= 0 && fa_idx < g_cfg.num_full_attn_layers &&
-                              kv->len >= 32 && kv->len < GPU_KV_SEQ);
+                              kv->len >= 32 && kv->len <= g_metal->gpu_kv_seq_len);
 
         if (gpu_attn_ready) {
             // Copy Q and gate to GPU; attention dispatches will be in CMD2
@@ -7213,7 +7274,7 @@ static void fused_layer_forward(
     // because GPU command encoder overhead dominates at short sequences.
     int gpu_attn_fuse = (is_full && lc->o_kind != MATVEC_KIND_GGUF_Q8_0 &&
                          !attn_out_for_oproj && g_metal && g_metal->attn_scores_pipe
-                         && kv && kv->len >= 32 && kv->len < GPU_KV_SEQ);
+                         && kv && kv->len >= 32 && kv->len <= g_metal->gpu_kv_seq_len);
 
     int disable_fused_cmd2 = full_attn_force_cmd2_fallback() || shared_override_active;
 
@@ -7263,7 +7324,7 @@ static void fused_layer_forward(
             uint32_t hd = HEAD_DIM;
             uint32_t kvd = (uint32_t)kv_dim;
             uint32_t sl = (uint32_t)kv->len;
-            uint32_t seq_stride = GPU_KV_SEQ;
+            uint32_t seq_stride = (uint32_t)g_metal->gpu_kv_seq_len;
             uint32_t hpkv = (uint32_t)heads_per_kv;
 
             // Enc A1: attn_scores_batched
@@ -7581,15 +7642,13 @@ static void fused_layer_forward(
 
             // Phase 2: parallel pread misses directly into cache buffers (zero-copy)
             if (num_misses > 0) {
-                size_t esz = active_expert_size();
-                InferPreadTask tasks[MAX_K];
+                InferPreadTask tasks[MAX_K] = {0};
                 for (int m = 0; m < num_misses; m++) {
                     int k = miss_indices[m];
                     int cidx = miss_cache_idx[m];
                     tasks[m].fd = expert_pick_fd(layer_idx, expert_indices[k], packed_fd);
                     tasks[m].dst = g_malloc_cache->data[cidx];
-                    tasks[m].offset = (off_t)expert_indices[k] * esz;
-                    tasks[m].size = esz;
+                    expert_read_range(layer_idx, expert_indices[k], &tasks[m].offset, &tasks[m].size);
                     tasks[m].result = 0;
                     tasks[m].mmap_base = NULL;  // always pread for cache population
                 }
@@ -7599,11 +7658,8 @@ static void fused_layer_forward(
                 // Mark valid
                 for (int m = 0; m < num_misses; m++) {
                     int k = miss_indices[m];
-                    valid[k] = (tasks[m].result == (ssize_t)esz);
-                    if (!valid[k]) {
-                        fprintf(stderr, "WARNING: expert %d pread: %zd/%zu\n",
-                                expert_indices[k], tasks[m].result, esz);
-                    }
+                    valid[k] = expert_read_succeeded(layer_idx, expert_indices[k],
+                                                     tasks[m].result, tasks[m].size);
                 }
             }
         } else if (g_expert_cache) {
@@ -7637,14 +7693,12 @@ static void fused_layer_forward(
 
             // Phase 2: parallel pread all cache misses
             if (num_misses > 0) {
-                size_t esz = active_expert_size();
-                InferPreadTask tasks[MAX_K];
+                InferPreadTask tasks[MAX_K] = {0};
                 for (int m = 0; m < num_misses; m++) {
                     int k = miss_indices[m];
                     tasks[m].fd = expert_pick_fd(layer_idx, expert_indices[k], packed_fd);
                     tasks[m].dst = [miss_bufs[m] contents];
-                    tasks[m].offset = (off_t)expert_indices[k] * esz;
-                    tasks[m].size = esz;
+                    expert_read_range(layer_idx, expert_indices[k], &tasks[m].offset, &tasks[m].size);
                     tasks[m].result = 0;
                     tasks[m].mmap_base = mmap_base;
                 }
@@ -7654,11 +7708,8 @@ static void fused_layer_forward(
                 // Mark successfully loaded misses as valid
                 for (int m = 0; m < num_misses; m++) {
                     int k = miss_indices[m];
-                    valid[k] = (tasks[m].result == (ssize_t)esz);
-                    if (!valid[k]) {
-                        fprintf(stderr, "WARNING: expert %d pread: %zd/%zu\n",
-                                expert_indices[k], tasks[m].result, esz);
-                    }
+                    valid[k] = expert_read_succeeded(layer_idx, expert_indices[k],
+                                                     tasks[m].result, tasks[m].size);
                 }
             }
         } else if (pred_started) {
@@ -7698,20 +7749,19 @@ static void fused_layer_forward(
 
             // Parallel sync-pread misses into buf_A
             if (miss_count > 0) {
-                InferPreadTask tasks[MAX_K];
-                size_t esz = active_expert_size();
+                InferPreadTask tasks[MAX_K] = {0};
                 for (int m = 0; m < miss_count; m++) {
                     int k = miss_k_slots[m];
                     tasks[m].fd = packed_fd;
                     tasks[m].dst = [g_metal->buf_multi_expert_data[k] contents];
-                    tasks[m].offset = (off_t)miss_ei[m] * esz;
-                    tasks[m].size = esz;
+                    expert_read_range(layer_idx, miss_ei[m], &tasks[m].offset, &tasks[m].size);
                     tasks[m].result = 0;
                 }
                 io_pool_dispatch(tasks, miss_count);
                 for (int m = 0; m < miss_count; m++) {
                     int k = miss_k_slots[m];
-                    valid[k] = (tasks[m].result == (ssize_t)active_expert_size());
+                    valid[k] = expert_read_succeeded(layer_idx, miss_ei[m],
+                                                     tasks[m].result, tasks[m].size);
                 }
             }
         } else if (g_use_lz4 && g_lz4_index[layer_idx]) {
@@ -7958,20 +8008,21 @@ static void fused_layer_forward(
 
     } else if (packed_fd >= 0) {
         // CPU fallback for experts
-        size_t esz = active_expert_size();
         float *expert_out_cpu = malloc(HIDDEN_DIM * sizeof(float));
         for (int k = 0; k < K; k++) {
             int eidx = expert_indices[k];
-            off_t expert_offset = (off_t)eidx * esz;
+            size_t esz;
+            off_t expert_offset;
+            expert_read_range(layer_idx, eidx, &expert_offset, &esz);
             void *expert_data = malloc(esz);
             ssize_t nread = pread(packed_fd, expert_data, esz, expert_offset);
-            if (nread != (ssize_t)esz) {
-                fprintf(stderr, "WARNING: layer %d expert %d pread: %zd/%zu\n",
-                        layer_idx, eidx, nread, esz);
+            if (!expert_read_succeeded(layer_idx, eidx, nread, esz)) {
                 free(expert_data);
                 continue;
             }
-            cpu_forward_expert_blob(expert_data, h_post, expert_out_cpu);
+            ExpertQuantKind quant_kind = (g_use_tiered && g_tiered_manifest)
+                ? tiered_expert_quant_kind(layer_idx, eidx) : active_expert_quant_kind();
+            cpu_forward_expert_blob(expert_data, h_post, expert_out_cpu, quant_kind);
             free(expert_data);
 
             cpu_vec_madd(moe_out, expert_out_cpu, expert_weights[k], HIDDEN_DIM);
