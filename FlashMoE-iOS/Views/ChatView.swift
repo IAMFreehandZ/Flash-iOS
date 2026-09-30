@@ -151,6 +151,9 @@ struct ChatView: View {
                     Button("Sampling Settings", systemImage: "slider.horizontal.3") {
                         showSamplingSettings = true
                     }
+                    if !engine.thinkingCapabilities.levels.isEmpty {
+                        ThinkingLevelPicker(capabilities: engine.thinkingCapabilities)
+                    }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
@@ -186,6 +189,9 @@ struct ChatView: View {
                     Button("Sampling Settings", systemImage: "slider.horizontal.3") {
                         showSamplingSettings = true
                     }
+                    if !engine.thinkingCapabilities.levels.isEmpty {
+                        ThinkingLevelPicker(capabilities: engine.thinkingCapabilities)
+                    }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
@@ -218,7 +224,12 @@ struct ChatView: View {
 
         // Start generation
         isGenerating = true
-        let assistantMessage = ChatMessage(role: .assistant, text: "", timestamp: Date())
+        let thinking = ThinkingSettings.load()
+        let useChatTemplate = chatTemplateEnabled
+        let thinkingEnabled = thinking.nativeConfig(for: engine.thinkingCapabilities,
+                                                   chatTemplateEnabled: useChatTemplate).enabled == 1
+        // The opening thinking marker is now prefilled in the prompt, not generated.
+        let assistantMessage = ChatMessage(role: .assistant, text: thinkingEnabled ? "<think>\n" : "", timestamp: Date())
         messages.append(assistantMessage)
         let assistantIndex = messages.count - 1
         let outputBudget = maxOutputTokens
@@ -227,13 +238,15 @@ struct ChatView: View {
         Task {
             let stream: AsyncStream<GenerationToken>
 
-            if engine.canContinue {
+            if useChatTemplate && engine.canContinue {
                 // Reuse KV cache — only process the new user turn
-                stream = engine.generateContinuation(userMessage: text, maxTokens: outputBudget, sampling: sampling)
+                stream = engine.generateContinuation(userMessage: text, maxTokens: outputBudget, sampling: sampling,
+                                                     thinking: thinking, chatTemplateEnabled: useChatTemplate)
             } else {
                 // First message — full chat template with system prompt
-                let formattedPrompt = buildChatPrompt(userMessage: text)
-                stream = engine.generate(prompt: formattedPrompt, maxTokens: outputBudget, sampling: sampling)
+                let formattedPrompt = buildChatPrompt(userMessage: text, useChatTemplate: useChatTemplate)
+                stream = engine.generate(prompt: formattedPrompt, maxTokens: outputBudget, sampling: sampling,
+                                         thinking: thinking, chatTemplateEnabled: useChatTemplate)
             }
 
             var gotTokens = false
@@ -252,12 +265,14 @@ struct ChatView: View {
             }
 
             // If continuation returned empty (context full), fall back to full generate
-            if !gotTokens && engine.canContinue {
+            if !gotTokens && useChatTemplate && engine.canContinue {
                 engine.reset()
-                let formattedPrompt = buildChatPrompt(userMessage: text)
-                let fallbackStream = engine.generate(prompt: formattedPrompt, maxTokens: outputBudget, sampling: sampling)
+                let formattedPrompt = buildChatPrompt(userMessage: text, useChatTemplate: useChatTemplate)
+                let fallbackStream = engine.generate(prompt: formattedPrompt, maxTokens: outputBudget, sampling: sampling,
+                                                     thinking: thinking, chatTemplateEnabled: useChatTemplate)
                 for await token in fallbackStream {
                     if token.tokensGenerated < 0 { continue }
+                    gotTokens = true
                     let clean = token.text
                         .replacingOccurrences(of: "<|im_end|>", with: "")
                         .replacingOccurrences(of: "<|im_start|>", with: "")
@@ -268,14 +283,15 @@ struct ChatView: View {
                 }
             }
 
+            if !gotTokens { messages[assistantIndex].text = "" }
             isGenerating = false
         }
     }
 
     /// Format conversation as Qwen chat template
-    private func buildChatPrompt(userMessage: String) -> String {
+    private func buildChatPrompt(userMessage: String, useChatTemplate: Bool) -> String {
         // Chat template can be disabled in settings (e.g. for smoke test models)
-        if !chatTemplateEnabled {
+        if !useChatTemplate {
             NSLog("[chat] chat template disabled — sending raw prompt")
             return userMessage
         }

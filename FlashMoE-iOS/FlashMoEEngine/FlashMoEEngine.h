@@ -53,6 +53,11 @@ typedef struct {
     uint64_t seed;
 } FlashMoESamplingConfig;
 
+typedef struct {
+    int enabled;               // -1 = original prompt, 0 = off, 1 = thinking enabled
+    int budget_tokens;         // 0 = unlimited thinking; Off is represented by enabled
+} FlashMoEThinkingConfig;
+
 // ---- Engine stats ----
 typedef struct {
     // Model info
@@ -110,6 +115,9 @@ void flashmoe_destroy(FlashMoEContext *ctx);
 // Call on the same serial queue as generation. Values are normalized to valid ranges.
 // Applying settings preserves repetition history and RNG progress across continuations.
 void flashmoe_set_sampling(FlashMoEContext *ctx, const FlashMoESamplingConfig *config);
+
+// Apply on the generation queue before a reply. Does not reset conversation state.
+void flashmoe_set_thinking(FlashMoEContext *ctx, const FlashMoEThinkingConfig *config);
 
 // Generate tokens from a prompt. Blocks until generation completes or is cancelled.
 // The callback is called for each token on the calling thread.

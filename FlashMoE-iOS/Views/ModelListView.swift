@@ -17,6 +17,7 @@ struct LocalModel: Identifiable {
     let hasTiered: Bool
     let has4bit: Bool
     let has2bit: Bool
+    let thinkingCapabilities: ThinkingCapabilities
 
     var sizeMB: Double { Double(sizeBytes) / 1_048_576 }
     var sizeGB: Double { sizeMB / 1024 }
@@ -127,6 +128,8 @@ struct ModelListView: View {
             }
 
             SamplingSettingsSection()
+            ThinkingSettingsSection(capabilities: selectedModel?.thinkingCapabilities
+                                    ?? localModels.first?.thinkingCapabilities ?? .qwen35)
 
             if let error = downloadManager.error,
                downloadManager.activeDownload == nil {
@@ -321,7 +324,8 @@ enum ModelScanner {
                 sizeBytes: size,
                 hasTiered: hasTiered,
                 has4bit: has4bit,
-                has2bit: has2bit
+                has2bit: has2bit,
+                thinkingCapabilities: ThinkingCapabilities.load(at: fullPath)
             ))
         }
         print("[model-scan] Total valid models: \(models.count)")

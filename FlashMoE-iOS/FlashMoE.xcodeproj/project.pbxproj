@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		530000000000000000000002 /* ThinkingSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 530000000000000000000001 /* ThinkingSettings.swift */; };
+		530000000000000000000004 /* ThinkingSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 530000000000000000000003 /* ThinkingSettingsView.swift */; };
+		530000000000000000000007 /* ThinkingSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 530000000000000000000006 /* ThinkingSettingsTests.swift */; };
+		530000000000000000000009 /* ThinkingSettingsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 530000000000000000000008 /* ThinkingSettingsUITests.swift */; };
 		520000000000000000000002 /* SamplingSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 520000000000000000000001 /* SamplingSettings.swift */; };
 		520000000000000000000004 /* SamplingSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 520000000000000000000003 /* SamplingSettingsView.swift */; };
 		510000000000000000000002 /* SamplingSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 510000000000000000000001 /* SamplingSettingsTests.swift */; };
@@ -36,6 +40,11 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		530000000000000000000001 /* ThinkingSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThinkingSettings.swift; sourceTree = "<group>"; };
+		530000000000000000000003 /* ThinkingSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThinkingSettingsView.swift; sourceTree = "<group>"; };
+		530000000000000000000005 /* FlashMoEThinking.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FlashMoEThinking.h; sourceTree = "<group>"; };
+		530000000000000000000006 /* ThinkingSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThinkingSettingsTests.swift; sourceTree = "<group>"; };
+		530000000000000000000008 /* ThinkingSettingsUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThinkingSettingsUITests.swift; sourceTree = "<group>"; };
 		520000000000000000000001 /* SamplingSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SamplingSettings.swift; sourceTree = "<group>"; };
 		520000000000000000000003 /* SamplingSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SamplingSettingsView.swift; sourceTree = "<group>"; };
 		520000000000000000000005 /* FlashMoESampling.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FlashMoESampling.h; sourceTree = "<group>"; };
@@ -83,8 +92,8 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		510000000000000000000004 /* Tests */ = {isa = PBXGroup; children = (510000000000000000000001 /* SamplingSettingsTests.swift */,); path = Tests; sourceTree = "<group>"; };
-		510000000000000000000024 /* UITests */ = {isa = PBXGroup; children = (510000000000000000000021 /* SamplingSettingsUITests.swift */,); path = UITests; sourceTree = "<group>"; };
+		510000000000000000000004 /* Tests */ = {isa = PBXGroup; children = (510000000000000000000001 /* SamplingSettingsTests.swift */, 530000000000000000000006 /* ThinkingSettingsTests.swift */,); path = Tests; sourceTree = "<group>"; };
+		510000000000000000000024 /* UITests */ = {isa = PBXGroup; children = (510000000000000000000021 /* SamplingSettingsUITests.swift */, 530000000000000000000008 /* ThinkingSettingsUITests.swift */,); path = UITests; sourceTree = "<group>"; };
 		18638B2F96B8C1EB7D55C874 /* Bridge */ = {
 			isa = PBXGroup;
 			children = (
@@ -178,6 +187,7 @@
 				DDD107A34A4DAEABC7E9ECFB /* ModelListView.swift */,
 				EE2222222222222222222222 /* ProfilerView.swift */,
 				520000000000000000000003 /* SamplingSettingsView.swift */,
+				530000000000000000000003 /* ThinkingSettingsView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -187,6 +197,7 @@
 			children = (
 				AA2222222222222222222222 /* ModelCatalog.swift */,
 				520000000000000000000001 /* SamplingSettings.swift */,
+				530000000000000000000001 /* ThinkingSettings.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -205,6 +216,7 @@
 				3404570FACF1297B40EF6369 /* FlashMoEEngine.h */,
 				50DF36AC37579556033D375F /* FlashMoEEngine.m */,
 				520000000000000000000005 /* FlashMoESampling.h */,
+				530000000000000000000005 /* FlashMoEThinking.h */,
 			);
 			path = FlashMoEEngine;
 			sourceTree = "<group>";
@@ -298,12 +310,14 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		510000000000000000000006 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (510000000000000000000002,); runOnlyForDeploymentPostprocessing = 0; };
-		510000000000000000000026 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (510000000000000000000022,); runOnlyForDeploymentPostprocessing = 0; };
+		510000000000000000000006 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (510000000000000000000002, 530000000000000000000007,); runOnlyForDeploymentPostprocessing = 0; };
+		510000000000000000000026 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (510000000000000000000022, 530000000000000000000009,); runOnlyForDeploymentPostprocessing = 0; };
 		D57FD46C656820096AA63872 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				530000000000000000000002 /* ThinkingSettings.swift in Sources */,
+				530000000000000000000004 /* ThinkingSettingsView.swift in Sources */,
 				520000000000000000000002 /* SamplingSettings.swift in Sources */,
 				520000000000000000000004 /* SamplingSettingsView.swift in Sources */,
 				D8242F5999552BC228A650CE /* shaders.metal in Sources */,
