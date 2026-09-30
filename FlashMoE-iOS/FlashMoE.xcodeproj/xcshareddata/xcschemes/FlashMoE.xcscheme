@@ -21,6 +21,22 @@
                ReferencedContainer = "container:FlashMoE.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
+         <BuildActionEntry buildForTesting = "YES" buildForRunning = "NO"
+            buildForProfiling = "NO" buildForArchiving = "NO" buildForAnalyzing = "NO">
+            <BuildableReference BuildableIdentifier = "primary"
+               BlueprintIdentifier = "510000000000000000000005"
+               BuildableName = "FlashMoETests.xctest" BlueprintName = "FlashMoETests"
+               ReferencedContainer = "container:FlashMoE.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry buildForTesting = "YES" buildForRunning = "NO"
+            buildForProfiling = "NO" buildForArchiving = "NO" buildForAnalyzing = "NO">
+            <BuildableReference BuildableIdentifier = "primary"
+               BlueprintIdentifier = "510000000000000000000025"
+               BuildableName = "FlashMoEUITests.xctest" BlueprintName = "FlashMoEUITests"
+               ReferencedContainer = "container:FlashMoE.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction
@@ -29,6 +45,22 @@
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
       shouldUseLaunchSchemeArgsEnv = "YES"
       shouldAutocreateTestPlan = "YES">
+      <Testables>
+         <TestableReference skipped = "NO" parallelizable = "NO">
+            <BuildableReference BuildableIdentifier = "primary"
+               BlueprintIdentifier = "510000000000000000000005"
+               BuildableName = "FlashMoETests.xctest" BlueprintName = "FlashMoETests"
+               ReferencedContainer = "container:FlashMoE.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference skipped = "NO" parallelizable = "NO">
+            <BuildableReference BuildableIdentifier = "primary"
+               BlueprintIdentifier = "510000000000000000000025"
+               BuildableName = "FlashMoEUITests.xctest" BlueprintName = "FlashMoEUITests"
+               ReferencedContainer = "container:FlashMoE.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+      </Testables>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Release"

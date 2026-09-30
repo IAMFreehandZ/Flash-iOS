@@ -7,6 +7,7 @@ on:
     paths:
       - ".github/workflows/build-unsigned-ipa.yml"
       - ".github/scripts/*generation-limits*"
+      - ".github/scripts/*sampling*"
       - ".github/scripts/package-unsigned-ipa.sh"
       - "FlashMoE-iOS/**"
       - "metal_infer/**"
@@ -16,6 +17,7 @@ on:
       - ".github/workflows/build-unsigned-ipa.yml"
       - ".github/scripts/package-unsigned-ipa.sh"
       - ".github/scripts/*generation-limits*"
+      - ".github/scripts/*sampling*"
       - "FlashMoE-iOS/**"
       - "metal_infer/**"
 
@@ -50,6 +52,13 @@ jobs:
             -o "$RUNNER_TEMP/test-generation-limits"
           "$RUNNER_TEMP/test-generation-limits"
 
+      - name: Test workflow and IPA packaging helpers
+        run: |
+          python3 -m venv "$RUNNER_TEMP/workflow-tests"
+          "$RUNNER_TEMP/workflow-tests/bin/python" -m pip install PyYAML
+          "$RUNNER_TEMP/workflow-tests/bin/python" .github/scripts/test-workflows.py
+          bash .github/scripts/test-package-unsigned-ipa.sh
+
       - name: Build unsigned device app
         run: |
           xcodebuild clean build analyze \
@@ -81,3 +90,53 @@ jobs:
           name: FlashMoE-unsigned-ipa
           path: artifacts/FlashMoE-unsigned.ipa
           if-no-files-found: error
+
+  simulator-tests:
+    name: Test sampling settings in iOS Simulator
+    runs-on: macos-26
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Select available iPhone simulator
+        id: simulator
+        run: |
+          xcrun simctl list devices available --json > "$RUNNER_TEMP/simulators.json"
+          python3 - "$RUNNER_TEMP/simulators.json" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          with open(sys.argv[1]) as source:
+              devices = json.load(source)["devices"]
+          iphones = [device for runtime, group in devices.items()
+                     if "iOS-26" in runtime
+                     for device in group if device["name"].startswith("iPhone")]
+          if not iphones:
+              raise SystemExit("No available iOS 26 iPhone simulator")
+          print("udid=" + iphones[0]["udid"])
+          PY
+
+      - name: Run settings unit tests and UI tests
+        run: |
+          mkdir -p artifacts
+          xcodebuild test \
+            -project FlashMoE-iOS/FlashMoE.xcodeproj \
+            -scheme FlashMoE \
+            -configuration Debug \
+            -destination 'platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}' \
+            -derivedDataPath "$RUNNER_TEMP/FlashMoESimulator" \
+            -resultBundlePath artifacts/SimulatorTests.xcresult \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Upload simulator test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sampling-simulator-tests
+          path: artifacts/SimulatorTests.xcresult
+          if-no-files-found: warn

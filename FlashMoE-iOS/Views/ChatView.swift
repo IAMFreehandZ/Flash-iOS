@@ -32,6 +32,7 @@ struct ChatView: View {
     @AppStorage("maxOutputTokens") private var maxOutputTokens: Int = GenerationSettings.defaultOutputTokens
     @State private var showModelInfo = false
     @State private var showProfiler = false
+    @State private var showSamplingSettings = false
     @FocusState private var inputFocused: Bool
 
     var body: some View {
@@ -147,6 +148,9 @@ struct ChatView: View {
                         engine.unloadModel()
                     }
                     .disabled(isGenerating)
+                    Button("Sampling Settings", systemImage: "slider.horizontal.3") {
+                        showSamplingSettings = true
+                    }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
@@ -179,6 +183,9 @@ struct ChatView: View {
                         engine.unloadModel()
                     }
                     .disabled(isGenerating)
+                    Button("Sampling Settings", systemImage: "slider.horizontal.3") {
+                        showSamplingSettings = true
+                    }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
@@ -189,6 +196,7 @@ struct ChatView: View {
             ModelInfoSheet(info: engine.modelInfo, contextUsed: engine.contextUsed,
                            contextCapacity: engine.contextCapacity)
         }
+        .sheet(isPresented: $showSamplingSettings) { SamplingSettingsView() }
         .alert("Response unavailable", isPresented: Binding(
             get: { engine.generationError != nil },
             set: { if !$0 { engine.clearGenerationError() } }
@@ -214,17 +222,18 @@ struct ChatView: View {
         messages.append(assistantMessage)
         let assistantIndex = messages.count - 1
         let outputBudget = maxOutputTokens
+        let sampling = SamplingSettings.load()
 
         Task {
             let stream: AsyncStream<GenerationToken>
 
             if engine.canContinue {
                 // Reuse KV cache — only process the new user turn
-                stream = engine.generateContinuation(userMessage: text, maxTokens: outputBudget)
+                stream = engine.generateContinuation(userMessage: text, maxTokens: outputBudget, sampling: sampling)
             } else {
                 // First message — full chat template with system prompt
                 let formattedPrompt = buildChatPrompt(userMessage: text)
-                stream = engine.generate(prompt: formattedPrompt, maxTokens: outputBudget)
+                stream = engine.generate(prompt: formattedPrompt, maxTokens: outputBudget, sampling: sampling)
             }
 
             var gotTokens = false
@@ -246,7 +255,7 @@ struct ChatView: View {
             if !gotTokens && engine.canContinue {
                 engine.reset()
                 let formattedPrompt = buildChatPrompt(userMessage: text)
-                let fallbackStream = engine.generate(prompt: formattedPrompt, maxTokens: outputBudget)
+                let fallbackStream = engine.generate(prompt: formattedPrompt, maxTokens: outputBudget, sampling: sampling)
                 for await token in fallbackStream {
                     if token.tokensGenerated < 0 { continue }
                     let clean = token.text

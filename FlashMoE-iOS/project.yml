@@ -25,6 +25,10 @@ targets:
         type: group
       - path: ViewModels
         type: group
+      - path: Models
+        type: group
+      - path: Services
+        type: group
       - path: Bridge
         type: group
       - path: FlashMoEEngine
@@ -73,3 +77,36 @@ targets:
       path: Resources/FlashMoE.entitlements
       properties:
         com.apple.security.app-sandbox: true
+
+  FlashMoETests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: FlashMoE
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+
+  FlashMoEUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    dependencies:
+      - target: FlashMoE
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: FlashMoE
+
+schemes:
+  FlashMoE:
+    build:
+      targets:
+        FlashMoE: all
+    test:
+      targets:
+        - FlashMoETests
+        - FlashMoEUITests

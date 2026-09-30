@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		520000000000000000000002 /* SamplingSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 520000000000000000000001 /* SamplingSettings.swift */; };
+		520000000000000000000004 /* SamplingSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 520000000000000000000003 /* SamplingSettingsView.swift */; };
+		510000000000000000000002 /* SamplingSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 510000000000000000000001 /* SamplingSettingsTests.swift */; };
+		510000000000000000000022 /* SamplingSettingsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 510000000000000000000021 /* SamplingSettingsUITests.swift */; };
 		0BA5B28A95E8C0616CCA6A3D /* FlashMoEApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EAF41B16BD4314D3642DC53 /* FlashMoEApp.swift */; };
 		15BBE610777A6EF58279A4E3 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2AEBDCE15020A40A8451CB5A /* ContentView.swift */; };
 		23E305445AFD3D5FB1A5E5FC /* ModelListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDD107A34A4DAEABC7E9ECFB /* ModelListView.swift */; };
@@ -26,7 +30,19 @@
 		FF3333333333333333333333 /* nax_gemm.metal in Resources */ = {isa = PBXBuildFile; fileRef = FF1111111111111111111111 /* nax_gemm.metal */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		510000000000000000000013 = {isa = PBXContainerItemProxy; containerPortal = D6A8CACD08FF01EA2A8633B6 /* Project object */; proxyType = 1; remoteGlobalIDString = F64C8CE03661205C4C06D1FF; remoteInfo = FlashMoE; };
+		510000000000000000000033 = {isa = PBXContainerItemProxy; containerPortal = D6A8CACD08FF01EA2A8633B6 /* Project object */; proxyType = 1; remoteGlobalIDString = F64C8CE03661205C4C06D1FF; remoteInfo = FlashMoE; };
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
+		520000000000000000000001 /* SamplingSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SamplingSettings.swift; sourceTree = "<group>"; };
+		520000000000000000000003 /* SamplingSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SamplingSettingsView.swift; sourceTree = "<group>"; };
+		520000000000000000000005 /* FlashMoESampling.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FlashMoESampling.h; sourceTree = "<group>"; };
+		510000000000000000000001 /* SamplingSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SamplingSettingsTests.swift; sourceTree = "<group>"; };
+		510000000000000000000003 /* FlashMoETests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = FlashMoETests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		510000000000000000000021 /* SamplingSettingsUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SamplingSettingsUITests.swift; sourceTree = "<group>"; };
+		510000000000000000000023 /* FlashMoEUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = FlashMoEUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		03B08EB0D0CE594165AB1C14 /* FlashMoE-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "FlashMoE-Bridging-Header.h"; sourceTree = "<group>"; };
 		2AEBDCE15020A40A8451CB5A /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		3321AD5929C6B6D4FAD446C8 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
@@ -52,6 +68,8 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		510000000000000000000007 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		510000000000000000000027 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		FD2BB59A0A54FF99587D143D /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -65,6 +83,8 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		510000000000000000000004 /* Tests */ = {isa = PBXGroup; children = (510000000000000000000001 /* SamplingSettingsTests.swift */,); path = Tests; sourceTree = "<group>"; };
+		510000000000000000000024 /* UITests */ = {isa = PBXGroup; children = (510000000000000000000021 /* SamplingSettingsUITests.swift */,); path = UITests; sourceTree = "<group>"; };
 		18638B2F96B8C1EB7D55C874 /* Bridge */ = {
 			isa = PBXGroup;
 			children = (
@@ -78,6 +98,8 @@
 			isa = PBXGroup;
 			children = (
 				64E904A15D9438F2D9B365F5 /* FlashMoE.app */,
+				510000000000000000000003 /* FlashMoETests.xctest */,
+				510000000000000000000023 /* FlashMoEUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -140,6 +162,8 @@
 				BB3333333333333333333333 /* Services */,
 				42B268D8ECA1DA8E59B4F599 /* ViewModels */,
 				993DF219F89AA4229E9A43D2 /* Views */,
+				510000000000000000000004 /* Tests */,
+				510000000000000000000024 /* UITests */,
 				7066FB671F127A31C9768B99 /* Frameworks */,
 				1BE036041A7213E9AE43E96C /* Products */,
 			);
@@ -153,6 +177,7 @@
 				DD2222222222222222222222 /* ModelDownloadRow.swift */,
 				DDD107A34A4DAEABC7E9ECFB /* ModelListView.swift */,
 				EE2222222222222222222222 /* ProfilerView.swift */,
+				520000000000000000000003 /* SamplingSettingsView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -161,6 +186,7 @@
 			isa = PBXGroup;
 			children = (
 				AA2222222222222222222222 /* ModelCatalog.swift */,
+				520000000000000000000001 /* SamplingSettings.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -178,6 +204,7 @@
 			children = (
 				3404570FACF1297B40EF6369 /* FlashMoEEngine.h */,
 				50DF36AC37579556033D375F /* FlashMoEEngine.m */,
+				520000000000000000000005 /* FlashMoESampling.h */,
 			);
 			path = FlashMoEEngine;
 			sourceTree = "<group>";
@@ -185,6 +212,28 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		510000000000000000000005 /* FlashMoETests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 510000000000000000000011;
+			buildPhases = (510000000000000000000006, 510000000000000000000007, 510000000000000000000008,);
+			buildRules = ();
+			dependencies = (510000000000000000000012,);
+			name = FlashMoETests;
+			productName = FlashMoETests;
+			productReference = 510000000000000000000003;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		510000000000000000000025 /* FlashMoEUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 510000000000000000000031;
+			buildPhases = (510000000000000000000026, 510000000000000000000027, 510000000000000000000028,);
+			buildRules = ();
+			dependencies = (510000000000000000000032,);
+			name = FlashMoEUITests;
+			productName = FlashMoEUITests;
+			productReference = 510000000000000000000023;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		F64C8CE03661205C4C06D1FF /* FlashMoE */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = A992692CC1A07BC40EFA0D3E /* Build configuration list for PBXNativeTarget "FlashMoE" */;
@@ -228,11 +277,15 @@
 			projectRoot = "";
 			targets = (
 				F64C8CE03661205C4C06D1FF /* FlashMoE */,
+				510000000000000000000005 /* FlashMoETests */,
+				510000000000000000000025 /* FlashMoEUITests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		510000000000000000000008 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		510000000000000000000028 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		E55762DD03B859815792AC85 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -245,10 +298,14 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		510000000000000000000006 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (510000000000000000000002,); runOnlyForDeploymentPostprocessing = 0; };
+		510000000000000000000026 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (510000000000000000000022,); runOnlyForDeploymentPostprocessing = 0; };
 		D57FD46C656820096AA63872 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				520000000000000000000002 /* SamplingSettings.swift in Sources */,
+				520000000000000000000004 /* SamplingSettingsView.swift in Sources */,
 				D8242F5999552BC228A650CE /* shaders.metal in Sources */,
 				CC1111111111111111111111 /* AppDelegate.swift in Sources */,
 				86FB8D83EC8F2AA092081685 /* ChatView.swift in Sources */,
@@ -266,7 +323,16 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		510000000000000000000012 = {isa = PBXTargetDependency; target = F64C8CE03661205C4C06D1FF; targetProxy = 510000000000000000000013; };
+		510000000000000000000032 = {isa = PBXTargetDependency; target = F64C8CE03661205C4C06D1FF; targetProxy = 510000000000000000000033; };
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		510000000000000000000009 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 26.0; PRODUCT_BUNDLE_IDENTIFIER = flashmoe.anemll.com.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_VERSION = 6.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/FlashMoE.app/FlashMoE"; }; name = Debug; };
+		510000000000000000000010 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 26.0; PRODUCT_BUNDLE_IDENTIFIER = flashmoe.anemll.com.tests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_VERSION = 6.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/FlashMoE.app/FlashMoE"; }; name = Release; };
+		510000000000000000000029 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 26.0; PRODUCT_BUNDLE_IDENTIFIER = flashmoe.anemll.com.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_VERSION = 6.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_TARGET_NAME = FlashMoE; }; name = Debug; };
+		510000000000000000000030 /* Release */ = {isa = XCBuildConfiguration; buildSettings = {GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 26.0; PRODUCT_BUNDLE_IDENTIFIER = flashmoe.anemll.com.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; SWIFT_VERSION = 6.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_TARGET_NAME = FlashMoE; }; name = Release; };
 		20C11034B98051ECF5657F59 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -486,6 +552,8 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		510000000000000000000011 = {isa = XCConfigurationList; buildConfigurations = (510000000000000000000009, 510000000000000000000010,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+		510000000000000000000031 = {isa = XCConfigurationList; buildConfigurations = (510000000000000000000029, 510000000000000000000030,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
 		716F6ADA7E507FC5C74161A0 /* Build configuration list for PBXProject "FlashMoE" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

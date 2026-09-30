@@ -59,6 +59,11 @@ static void test_top_k(void) {
     CHECK(second_count > 100, "top k samples more than the maximum");
     sampler.config.top_k = 100;
     CHECK(flashmoe_sampler_sample(&sampler, logits, 4) >= 0, "top k larger than the vocabulary is safe");
+    sampler.config.top_k = 2;
+    for (int i = 0; i < 100; i++) {
+        int token = flashmoe_sampler_sample(&sampler, (float[]){1, 1, 1, 1}, 4);
+        CHECK(token == 0 || token == 1, "top k breaks equal-score ties by the lowest token IDs");
+    }
     flashmoe_sampler_free(&sampler);
 }
 
@@ -178,6 +183,21 @@ static void test_seed_and_continuation(void) {
         CHECK(flashmoe_sampler_sample(&first, logits, 4) == flashmoe_sampler_sample(&second, logits, 4),
               "zero is a valid fixed seed");
     }
+    flashmoe_sampler_accept(&first, 0);
+    config = first.config;
+    config.seed = 1234;
+    config.repetition_penalty = 2;
+    flashmoe_sampler_configure(&first, config);
+    flashmoe_sampler_begin(&first, 999); // Continuation: no conversation reset.
+    second.config = config;
+    flashmoe_sampler_reset(&second, 555);
+    for (int i = 0; i < 20; i++) {
+        CHECK(flashmoe_sampler_sample(&first, logits, 4) == flashmoe_sampler_sample(&second, logits, 4),
+              "changing a fixed seed reseeds the next continuation without resetting the chat");
+    }
+    first.config.temperature = 0;
+    CHECK(flashmoe_sampler_sample(&first, (float[]){4, 3}, 2) == 1,
+          "changing the seed preserves repetition history");
     flashmoe_sampler_free(&first);
     flashmoe_sampler_free(&second);
 }
