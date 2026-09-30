@@ -17,6 +17,7 @@
 #include "FlashMoEEngine.h"
 #include "FlashMoEGenerationLimits.h"
 #include "FlashMoESampling.h"
+#include "FlashMoEThinking.h"
 #include <stdatomic.h>
 #include <os/proc.h>
 
@@ -48,6 +49,7 @@ struct FlashMoEContext {
     int turn_count;                // 0 = fresh session, >0 = has history
     int pending_token;             // last emitted token, not yet in attention state
     FlashMoESampler sampler;
+    FlashMoEThinkingConfig thinking;
 
     // Generation stats
     double tokens_per_second;
@@ -90,14 +92,9 @@ static NSString *flashmoe_find_shader_source(void) {
 // (The original is inside #ifndef CHAT_MODE in infer.m, excluded by our #define)
 // ============================================================================
 
-static PromptTokens *flashmoe_tokenize_continuation_turn(const char *user_content) {
-    const char *prefix = "\n<|im_start|>user\n";
-    const char *suffix = "<|im_end|>\n<|im_start|>assistant\n";
-
-    size_t prompt_len = strlen(prefix) + strlen(user_content) + strlen(suffix) + 1;
-    char *prompt = malloc(prompt_len);
+static PromptTokens *flashmoe_tokenize_continuation_turn(const char *user_content, int thinking_mode) {
+    char *prompt = flashmoe_continuation_prompt(user_content, thinking_mode);
     if (!prompt) return NULL;
-    snprintf(prompt, prompt_len, "%s%s%s", prefix, user_content, suffix);
     PromptTokens *pt = encode_prompt_text_to_tokens(prompt);
     free(prompt);
     return pt;
@@ -113,6 +110,7 @@ FlashMoEContext *flashmoe_create(void) {
     ctx->loaded = 0;
     ctx->pending_token = -1;
     flashmoe_sampler_init(&ctx->sampler);
+    ctx->thinking = (FlashMoEThinkingConfig){.enabled = -1, .budget_tokens = 2048};
     atomic_store(&ctx->cancelled, 0);
     ctx->last_error[0] = '\0';
     return ctx;
@@ -151,6 +149,7 @@ int flashmoe_load(FlashMoEContext *ctx, const FlashMoEConfig *config) {
         g_stream_mode = 1;
 
         g_think_budget = config->think_budget > 0 ? config->think_budget : 0;
+        ctx->thinking = (FlashMoEThinkingConfig){.enabled = -1, .budget_tokens = g_think_budget};
 
         // Set quantization mode
         g_use_tiered = config->use_tiered;
@@ -604,6 +603,12 @@ void flashmoe_set_sampling(FlashMoEContext *ctx, const FlashMoESamplingConfig *c
     if (ctx && config) flashmoe_sampler_configure(&ctx->sampler, *config);
 }
 
+void flashmoe_set_thinking(FlashMoEContext *ctx, const FlashMoEThinkingConfig *config) {
+    if (!ctx || !config) return;
+    ctx->thinking.enabled = config->enabled < 0 ? -1 : config->enabled > 0 ? 1 : 0;
+    ctx->thinking.budget_tokens = config->budget_tokens > 0 ? config->budget_tokens : 0;
+}
+
 static uint64_t flashmoe_sampling_entropy(void) {
     uint64_t entropy;
     arc4random_buf(&entropy, sizeof(entropy));
@@ -641,8 +646,8 @@ static void flashmoe_clear_attention_state(FlashMoEContext *ctx) {
     }
 }
 
-static int flashmoe_effective_think_budget(int max_tokens) {
-    int budget = flashmoe_thinking_budget(g_think_budget, max_tokens);
+static int flashmoe_effective_think_budget(FlashMoEContext *ctx, int max_tokens) {
+    int budget = flashmoe_thinking_budget(ctx->thinking.budget_tokens, max_tokens);
     NSLog(@"[gen] thinking budget=%d, output limit=%d", budget, max_tokens);
     return budget;
 }
@@ -699,7 +704,10 @@ int flashmoe_generate(
         double t0 = now_ms();
 
         // ---- Tokenize prompt ----
-        PromptTokens *pt = encode_prompt_text_to_tokens(prompt);
+        int starts_thinking = flashmoe_prompt_starts_thinking(prompt, ctx->thinking.enabled);
+        char *formatted_prompt = flashmoe_prompt_with_thinking(prompt, ctx->thinking.enabled);
+        PromptTokens *pt = formatted_prompt ? encode_prompt_text_to_tokens(formatted_prompt) : NULL;
+        free(formatted_prompt);
         if (!pt) {
             snprintf(ctx->last_error, sizeof(ctx->last_error), "Failed to tokenize prompt");
             return -1;
@@ -715,7 +723,7 @@ int flashmoe_generate(
             return -1;
         }
         max_tokens = output_budget;
-        int think_budget = flashmoe_effective_think_budget(max_tokens);
+        int think_budget = flashmoe_effective_think_budget(ctx, max_tokens);
 
         // ---- Reset state for new generation ----
         discard_deferred_experts();
@@ -839,7 +847,8 @@ int flashmoe_generate(
             }
         }
 
-        int in_think = (next_token == THINK_START_TOKEN) ? 1 : 0;
+        int in_think = next_token != THINK_END_TOKEN &&
+            (starts_thinking || next_token == THINK_START_TOKEN);
         int think_tokens = 0;
 
         // ---- Auto-regressive generation loop ----
@@ -959,7 +968,7 @@ int flashmoe_generate_continuation(
         double t0 = now_ms();
 
         // Tokenize only the new turn (with continuation markers)
-        PromptTokens *pt = flashmoe_tokenize_continuation_turn(user_content);
+        PromptTokens *pt = flashmoe_tokenize_continuation_turn(user_content, ctx->thinking.enabled);
         if (!pt) {
             snprintf(ctx->last_error, sizeof(ctx->last_error), "Failed to tokenize continuation turn");
             return -1;
@@ -994,7 +1003,7 @@ int flashmoe_generate_continuation(
         ctx->turn_count = 0;  // invalidate partial state if continuation is cancelled
         flashmoe_feed_state_token(ctx, pending_token, &pos);
         if (!pending_is_eos) flashmoe_feed_state_token(ctx, EOS_TOKEN_2, &pos);
-        int think_budget = flashmoe_effective_think_budget(max_tokens);
+        int think_budget = flashmoe_effective_think_budget(ctx, max_tokens);
 
         // ---- Prefill continuation tokens ----
         float *embed_batch = NULL;
@@ -1086,7 +1095,8 @@ int flashmoe_generate_continuation(
             }
         }
 
-        int in_think = (next_token == THINK_START_TOKEN) ? 1 : 0;
+        int in_think = next_token != THINK_END_TOKEN &&
+            (ctx->thinking.enabled > 0 || next_token == THINK_START_TOKEN);
         int think_tokens = 0;
 
         // ---- Auto-regressive generation loop ----

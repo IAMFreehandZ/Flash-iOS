@@ -8,6 +8,7 @@ on:
       - ".github/workflows/build-unsigned-ipa.yml"
       - ".github/scripts/*generation-limits*"
       - ".github/scripts/*sampling*"
+      - ".github/scripts/*thinking*"
       - ".github/scripts/package-unsigned-ipa.sh"
       - "FlashMoE-iOS/**"
       - "metal_infer/**"
@@ -18,6 +19,7 @@ on:
       - ".github/scripts/package-unsigned-ipa.sh"
       - ".github/scripts/*generation-limits*"
       - ".github/scripts/*sampling*"
+      - ".github/scripts/*thinking*"
       - "FlashMoE-iOS/**"
       - "metal_infer/**"
 
@@ -51,6 +53,13 @@ jobs:
             .github/scripts/test-generation-limits.c \
             -o "$RUNNER_TEMP/test-generation-limits"
           "$RUNNER_TEMP/test-generation-limits"
+
+      - name: Test thinking controls
+        run: |
+          clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+            .github/scripts/test-thinking.c \
+            -o "$RUNNER_TEMP/test-thinking"
+          "$RUNNER_TEMP/test-thinking"
 
       - name: Test workflow and IPA packaging helpers
         run: |
@@ -92,7 +101,7 @@ jobs:
           if-no-files-found: error
 
   simulator-tests:
-    name: Test sampling settings in iOS Simulator
+    name: Test generation settings in iOS Simulator
     runs-on: macos-26
     timeout-minutes: 20
     env:

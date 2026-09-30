@@ -101,6 +101,7 @@ final class FlashMoEEngine: @unchecked Sendable {
     // Observable state for SwiftUI
     private(set) var state: EngineState = .idle
     private(set) var modelInfo: ModelInfo?
+    private(set) var thinkingCapabilities: ThinkingCapabilities = .unsupported
     private(set) var tokensPerSecond: Double = 0
     private(set) var tokensGenerated: Int = 0
     private(set) var timeToFirstToken: Double = 0
@@ -202,9 +203,11 @@ final class FlashMoEEngine: @unchecked Sendable {
                     metalBufferBytes: UInt64(stats.metal_buffer_bytes),
                     expertSizeEach: UInt64(stats.expert_size_each)
                 )
+                let thinkingCapabilities = ThinkingCapabilities.load(at: path)
 
                 DispatchQueue.main.async {
                     self.modelInfo = info
+                    self.thinkingCapabilities = thinkingCapabilities
                     self.contextCapacity = Int(stats.context_capacity)
                     self.contextUsed = Int(stats.context_used)
                     self.generationError = nil
@@ -222,6 +225,7 @@ final class FlashMoEEngine: @unchecked Sendable {
             flashmoe_unload(ctx)
         }
         modelInfo = nil
+        thinkingCapabilities = .unsupported
         contextCapacity = 0
         contextUsed = 0
         generationError = nil
@@ -232,12 +236,14 @@ final class FlashMoEEngine: @unchecked Sendable {
 
     /// Generate tokens from a prompt, returning an AsyncStream of tokens
     func generate(prompt: String, maxTokens: Int = GenerationSettings.defaultOutputTokens,
-                  sampling: SamplingSettings = .load()) -> AsyncStream<GenerationToken> {
+                  sampling: SamplingSettings = .load(), thinking: ThinkingSettings = .load(),
+                  chatTemplateEnabled: Bool = true) -> AsyncStream<GenerationToken> {
         AsyncStream { continuation in
             guard let ctx = context, state == .ready else {
                 continuation.finish()
                 return
             }
+            let capabilities = thinkingCapabilities
 
             DispatchQueue.main.async {
                 self.state = .generating
@@ -257,6 +263,8 @@ final class FlashMoEEngine: @unchecked Sendable {
                 // C callback bridge: userdata points to the Swift continuation
                 var samplingConfig = sampling.nativeConfig
                 flashmoe_set_sampling(ctx, &samplingConfig)
+                var thinkingConfig = thinking.nativeConfig(for: capabilities, chatTemplateEnabled: chatTemplateEnabled)
+                flashmoe_set_thinking(ctx, &thinkingConfig)
                 let userDataPtr = Unmanaged.passRetained(
                     TokenCallbackContext(continuation: continuation, engine: self)
                 ).toOpaque()
@@ -321,12 +329,14 @@ final class FlashMoEEngine: @unchecked Sendable {
     /// Generate continuation — reuses KV cache from previous turns.
     /// Returns nil if context is full (caller should reset and use generate instead).
     func generateContinuation(userMessage: String, maxTokens: Int = GenerationSettings.defaultOutputTokens,
-                              sampling: SamplingSettings = .load()) -> AsyncStream<GenerationToken> {
+                              sampling: SamplingSettings = .load(), thinking: ThinkingSettings = .load(),
+                              chatTemplateEnabled: Bool = true) -> AsyncStream<GenerationToken> {
         AsyncStream { continuation in
             guard let ctx = context, state == .ready else {
                 continuation.finish()
                 return
             }
+            let capabilities = thinkingCapabilities
 
             DispatchQueue.main.async {
                 self.state = .generating
@@ -344,6 +354,8 @@ final class FlashMoEEngine: @unchecked Sendable {
             engineQueue.async { [weak self] in
                 var samplingConfig = sampling.nativeConfig
                 flashmoe_set_sampling(ctx, &samplingConfig)
+                var thinkingConfig = thinking.nativeConfig(for: capabilities, chatTemplateEnabled: chatTemplateEnabled)
+                flashmoe_set_thinking(ctx, &thinkingConfig)
                 let userDataPtr = Unmanaged.passRetained(
                     TokenCallbackContext(continuation: continuation, engine: self)
                 ).toOpaque()
