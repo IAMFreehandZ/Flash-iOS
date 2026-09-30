@@ -40,7 +40,10 @@ final class SamplingSettingsUITests: XCTestCase {
         let seed = app.switches["samplingUseFixedSeed"]
         reveal(seed, in: app)
         XCTAssertEqual(seed.value as? String, "0")
-        seed.tap()
+        // SwiftUI exposes the labeled row and its UISwitch separately.
+        // Tapping the row's center does not operate the nested switch.
+        seed.switches.firstMatch.tap()
+        XCTAssertEqual(seed.value as? String, "1")
         let seedField = app.textFields["samplingSeed"]
         reveal(seedField, in: app)
         XCTAssertEqual(seedField.value as? String, "42")
