@@ -60,6 +60,70 @@ final class ThinkingSettingsTests: XCTestCase {
         }
     }
 
+    func testLongThinkingStaysInTheDisclosureUntilItsEndMarker() {
+        let reasoning = String(repeating: "Planning the story. ", count: 2048)
+        let open = content("<think>\n" + reasoning)
+        XCTAssertEqual(open.think, reasoning.trimmingCharacters(in: .whitespacesAndNewlines))
+        XCTAssertEqual(open.reply, "")
+        let closed = content("<think>\n" + reasoning + "</think>\n\nOnce upon a time.")
+        XCTAssertEqual(closed.think, open.think)
+        XCTAssertEqual(closed.reply, "Once upon a time.")
+    }
+
+    func testReopenedThinkingIsKeptOutOfTheAnswer() {
+        let parsed = content("<think>First plan</think>\n\nIntroduction. <think>Revised plan</think> Ending.")
+        XCTAssertEqual(parsed.think, "First plan\n\nRevised plan")
+        XCTAssertEqual(parsed.reply, "Introduction.  Ending.")
+    }
+
+    func testUnfinishedThinkingAfterAnAnswerRemainsInTheDisclosure() {
+        let parsed = content("<think>First plan</think>Introduction.<think>Still planning")
+        XCTAssertEqual(parsed.think, "First plan\n\nStill planning")
+        XCTAssertEqual(parsed.reply, "Introduction.")
+    }
+
+    func testClosingMarkerSplitAcrossCallbacksNeverBecomesAnswerText() {
+        for suffix in ["<", "</", "</t", "</th", "</thi", "</thin", "</think"] {
+            let parsed = content("<think>Plan" + suffix, isStreaming: true)
+            XCTAssertEqual(parsed.think, "Plan", "Suffix: \(suffix)")
+            XCTAssertEqual(parsed.reply, "", "Suffix: \(suffix)")
+        }
+        XCTAssertEqual(content("<think>Plan</think>\n\nStory").reply, "Story")
+    }
+
+    func testReopeningMarkerSplitAcrossCallbacksIsHeldOutOfTheAnswer() {
+        for suffix in ["<", "<t", "<th", "<thi", "<thin", "<think"] {
+            let parsed = content("<think>Plan</think>Story" + suffix, isStreaming: true)
+            XCTAssertEqual(parsed.think, "Plan", "Suffix: \(suffix)")
+            XCTAssertEqual(parsed.reply, "Story", "Suffix: \(suffix)")
+        }
+        let reopened = content("<think>Plan</think>Story<think>More planning")
+        XCTAssertEqual(reopened.think, "Plan\n\nMore planning")
+        XCTAssertEqual(reopened.reply, "Story")
+    }
+
+    func testStrayClosingMarkerDoesNotPairWithALaterOpeningMarker() {
+        let parsed = content("</think>Literal text. <think>Plan</think>Answer")
+        XCTAssertEqual(parsed.think, "Plan")
+        XCTAssertEqual(parsed.reply, "</think>Literal text. Answer")
+    }
+
+    func testDirectAnswerHasNoThinkingDisclosure() {
+        let parsed = content("A short story.")
+        XCTAssertNil(parsed.think)
+        XCTAssertEqual(parsed.reply, "A short story.")
+    }
+
+    func testFinishedAnswerPreservesLiteralMarkerPrefixes() {
+        for suffix in ["<", "<t", "<th", "<thi", "<thin", "<think"] {
+            XCTAssertEqual(content("Literal text " + suffix).reply, "Literal text " + suffix)
+        }
+    }
+
+    private func content(_ text: String, isStreaming: Bool = false) -> (think: String?, reply: String) {
+        ChatMessage(role: .assistant, text: text, timestamp: Date(), isStreaming: isStreaming).parsedContent
+    }
+
     private func withDefaults(_ body: (UserDefaults) -> Void) {
         let suite = "ThinkingSettingsTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!

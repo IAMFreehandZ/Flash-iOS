@@ -16,11 +16,14 @@ static inline int flashmoe_generation_budget(int capacity, int position,
 }
 
 // A positive thinking limit leaves half the output budget available for the answer.
-// Zero continues to mean unlimited thinking.
-static inline int flashmoe_thinking_budget(int configured_tokens, int output_tokens) {
+// Zero means unlimited thinking; -1 means insufficient room for the transition
+// and answer reserve alongside at least one reasoning token.
+static inline int flashmoe_thinking_budget(int configured_tokens, int output_tokens,
+                                          int closing_tokens) {
     if (configured_tokens <= 0 || output_tokens <= 0) return 0;
-    int budget = output_tokens - output_tokens / 2 - 1;  // reserve </think> too
-    if (budget < 1) budget = 1;
+    if (closing_tokens < 1) closing_tokens = 1;
+    int budget = output_tokens - output_tokens / 2 - closing_tokens;
+    if (budget < 1) return -1;
     return budget < configured_tokens ? budget : configured_tokens;
 }
 

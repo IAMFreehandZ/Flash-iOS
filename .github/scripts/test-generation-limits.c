@@ -33,18 +33,25 @@ int main(void) {
     }
     const struct {
         const char *name;
-        int configured, output, expected;
+        int configured, output, closing, expected;
     } thinking_cases[] = {
-        {"larger output leaves 1024 tokens for an answer", 2048, 2048, 1023},
-        {"legacy 500-token output keeps its answer reserve", 2048, 500, 249},
-        {"configured thinking limit remains an upper bound", 64, 2048, 64},
-        {"large output honors configured thinking limit", 2048, 8192, 2048},
-        {"zero thinking budget remains unlimited", 0, 2048, 0},
-        {"short response keeps half its tokens for the answer", 2048, 64, 31},
+        {"larger output leaves 1024 tokens for an answer", 2048, 2048, 2, 1022},
+        {"legacy 500-token output keeps its answer reserve", 2048, 500, 2, 248},
+        {"configured thinking limit remains an upper bound", 64, 2048, 2, 64},
+        {"large output honors configured thinking limit", 2048, 8192, 2, 2048},
+        {"zero thinking budget remains unlimited", 0, 2048, 2, 0},
+        {"short response keeps half its tokens for the answer", 2048, 64, 2, 30},
+        {"all encoded separator tokens are reserved", 2048, 2048, 3, 1021},
+        {"one remaining output position cannot fit an answer", 2048, 1, 2, -1},
+        {"two positions cannot fit the transition and an answer", 2048, 2, 2, -1},
+        {"three positions cannot fit thinking plus an answer", 2048, 3, 2, -1},
+        {"four positions cannot preserve half for the answer", 2048, 4, 2, -1},
+        {"five positions fit thinking, transition and answer", 2048, 5, 2, 1},
     };
     for (size_t i = 0; i < sizeof(thinking_cases) / sizeof(thinking_cases[0]); i++) {
         int actual = flashmoe_thinking_budget(thinking_cases[i].configured,
-                                              thinking_cases[i].output);
+                                              thinking_cases[i].output,
+                                              thinking_cases[i].closing);
         if (actual != thinking_cases[i].expected) {
             fprintf(stderr, "FAIL: %s: expected %d, got %d\n",
                     thinking_cases[i].name, thinking_cases[i].expected, actual);
@@ -52,6 +59,6 @@ int main(void) {
         }
     }
     if (failures) return 1;
-    puts("generation limit tests passed (12 context cases, 6 thinking cases)");
+    puts("generation limit tests passed (12 context cases, 12 thinking cases)");
     return 0;
 }

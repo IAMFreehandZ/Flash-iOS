@@ -646,10 +646,43 @@ static void flashmoe_clear_attention_state(FlashMoEContext *ctx) {
     }
 }
 
-static int flashmoe_effective_think_budget(FlashMoEContext *ctx, int max_tokens) {
-    int budget = flashmoe_thinking_budget(ctx->thinking.budget_tokens, max_tokens);
+static int flashmoe_prepare_thinking(FlashMoEContext *ctx, int max_tokens,
+                                     int starts_thinking, FlashMoEThinkingState *state) {
+    flashmoe_thinking_state_init(state, starts_thinking);
+    if (ctx->thinking.budget_tokens > 0) {
+        state->closing_count = bpe_encode(&g_tokenizer, FLASHMOE_THINKING_END_TEXT,
+                                          state->closing_tokens,
+                                          sizeof(state->closing_tokens) / sizeof(state->closing_tokens[0]));
+        if (state->closing_count <= 0) {
+            ctx->turn_count = 0;
+            snprintf(ctx->last_error, sizeof(ctx->last_error), "Failed to tokenize the thinking transition");
+            return -1;
+        }
+    }
+    int budget = flashmoe_thinking_budget(ctx->thinking.budget_tokens, max_tokens,
+                                          state->closing_count);
+    if (budget < 0) {
+        if (!starts_thinking) {
+            // Raw prompts and direct answers may not produce a thinking block.
+            budget = 1;
+        } else {
+            snprintf(ctx->last_error, sizeof(ctx->last_error),
+                     "Insufficient context space to finish thinking and reserve an answer. Start a new chat or increase Context Window in Models & Settings.");
+            return -2;
+        }
+    }
     NSLog(@"[gen] thinking budget=%d, output limit=%d", budget, max_tokens);
     return budget;
+}
+
+static int flashmoe_next_output_token(FlashMoEContext *ctx,
+                                      FlashMoEThinkingState *thinking, int budget) {
+    int token = flashmoe_thinking_forced_token(thinking, budget);
+    if (token < 0) token = flashmoe_sample_next_token(ctx);
+    if (token >= 0) {
+        flashmoe_thinking_accept_token(thinking, token, THINK_START_TOKEN, THINK_END_TOKEN);
+    }
+    return token;
 }
 
 static void flashmoe_store_turn(FlashMoEContext *ctx, int pos, int pending_token,
@@ -723,7 +756,9 @@ int flashmoe_generate(
             return -1;
         }
         max_tokens = output_budget;
-        int think_budget = flashmoe_effective_think_budget(ctx, max_tokens);
+        FlashMoEThinkingState thinking;
+        int think_budget = flashmoe_prepare_thinking(ctx, max_tokens, starts_thinking, &thinking);
+        if (think_budget < 0) { free(pt->ids); free(pt); return -1; }
 
         // ---- Reset state for new generation ----
         discard_deferred_experts();
@@ -823,7 +858,7 @@ int flashmoe_generate(
         }
 
         lm_head_forward(ctx->wf, ctx->hidden, ctx->logits);
-        int next_token = flashmoe_sample_next_token(ctx);
+        int next_token = flashmoe_next_output_token(ctx, &thinking, think_budget);
         if (next_token < 0) { free(pt->ids); free(pt); return -1; }
         flashmoe_record_sampling_token(ctx, next_token);
 
@@ -847,10 +882,6 @@ int flashmoe_generate(
             }
         }
 
-        int in_think = next_token != THINK_END_TOKEN &&
-            (starts_thinking || next_token == THINK_START_TOKEN);
-        int think_tokens = 0;
-
         // ---- Auto-regressive generation loop ----
         double gen_start = now_ms();
 
@@ -863,11 +894,6 @@ int flashmoe_generate(
                 NSLog(@"[gen] EOS token %d at position %d — stopping", next_token, ctx->tokens_generated);
                 break;
             }
-
-            // Think budget enforcement
-            if (next_token == THINK_START_TOKEN) in_think = 1;
-            if (next_token == THINK_END_TOKEN) in_think = 0;
-            if (in_think) think_tokens++;
 
             // Embed + forward pass
             embed_lookup(ctx->wf, next_token, ctx->hidden);
@@ -894,14 +920,8 @@ int flashmoe_generate(
             }
 
             lm_head_forward(ctx->wf, ctx->hidden, ctx->logits);
-            next_token = flashmoe_sample_next_token(ctx);
+            next_token = flashmoe_next_output_token(ctx, &thinking, think_budget);
             if (next_token < 0) { free(pt->ids); free(pt); return -1; }
-
-            // Think budget: force end thinking
-            if (in_think && think_budget > 0 && think_tokens >= think_budget) {
-                next_token = THINK_END_TOKEN;
-                in_think = 0;
-            }
 
             ctx->tokens_generated++;
             flashmoe_record_sampling_token(ctx, next_token);
@@ -994,6 +1014,10 @@ int flashmoe_generate_continuation(
             return -2;  // Signal to caller: context full, need reset
         }
         max_tokens = output_budget;
+        FlashMoEThinkingState thinking;
+        int think_budget = flashmoe_prepare_thinking(ctx, max_tokens,
+                                                    ctx->thinking.enabled > 0, &thinking);
+        if (think_budget < 0) { free(pt->ids); free(pt); return think_budget; }
 
         // NOTE: No reset_delta_net_state() — reuse KV caches and linear attention state
         flashmoe_sampler_begin(&ctx->sampler, flashmoe_sampling_entropy());
@@ -1003,7 +1027,6 @@ int flashmoe_generate_continuation(
         ctx->turn_count = 0;  // invalidate partial state if continuation is cancelled
         flashmoe_feed_state_token(ctx, pending_token, &pos);
         if (!pending_is_eos) flashmoe_feed_state_token(ctx, EOS_TOKEN_2, &pos);
-        int think_budget = flashmoe_effective_think_budget(ctx, max_tokens);
 
         // ---- Prefill continuation tokens ----
         float *embed_batch = NULL;
@@ -1074,7 +1097,7 @@ int flashmoe_generate_continuation(
         }
 
         lm_head_forward(ctx->wf, ctx->hidden, ctx->logits);
-        int next_token = flashmoe_sample_next_token(ctx);
+        int next_token = flashmoe_next_output_token(ctx, &thinking, think_budget);
         if (next_token < 0) { free(pt->ids); free(pt); return -1; }
         flashmoe_record_sampling_token(ctx, next_token);
 
@@ -1095,10 +1118,6 @@ int flashmoe_generate_continuation(
             }
         }
 
-        int in_think = next_token != THINK_END_TOKEN &&
-            (ctx->thinking.enabled > 0 || next_token == THINK_START_TOKEN);
-        int think_tokens = 0;
-
         // ---- Auto-regressive generation loop ----
         double gen_start = now_ms();
 
@@ -1106,10 +1125,6 @@ int flashmoe_generate_continuation(
             if (atomic_load(&ctx->cancelled)) break;
 
             if (next_token == EOS_TOKEN_1 || next_token == EOS_TOKEN_2) break;
-
-            if (next_token == THINK_START_TOKEN) in_think = 1;
-            if (next_token == THINK_END_TOKEN) in_think = 0;
-            if (in_think) think_tokens++;
 
             embed_lookup(ctx->wf, next_token, ctx->hidden);
 
@@ -1134,13 +1149,8 @@ int flashmoe_generate_continuation(
             }
 
             lm_head_forward(ctx->wf, ctx->hidden, ctx->logits);
-            next_token = flashmoe_sample_next_token(ctx);
+            next_token = flashmoe_next_output_token(ctx, &thinking, think_budget);
             if (next_token < 0) { free(pt->ids); free(pt); return -1; }
-
-            if (in_think && think_budget > 0 && think_tokens >= think_budget) {
-                next_token = THINK_END_TOKEN;
-                in_think = 0;
-            }
 
             ctx->tokens_generated++;
             flashmoe_record_sampling_token(ctx, next_token);

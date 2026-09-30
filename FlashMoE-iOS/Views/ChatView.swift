@@ -13,10 +13,54 @@ struct ChatMessage: Identifiable {
     let role: Role
     var text: String
     let timestamp: Date
+    var isStreaming = false
 
     enum Role {
         case user
         case assistant
+    }
+
+    /// Parse every reasoning block, including one still arriving in the stream.
+    var parsedContent: (think: String?, reply: String) {
+        var remaining = text[...]
+        var inThinking = false
+        var thinking = ""
+        var blocks: [String] = []
+        var reply = ""
+
+        while !remaining.isEmpty {
+            let marker = inThinking ? "</think>" : "<think>"
+            guard let range = remaining.range(of: marker) else {
+                // A marker may span callbacks. Hold its unfinished suffix until
+                // the next token arrives so it cannot appear in the answer.
+                var tail = String(remaining)
+                if isStreaming {
+                    for length in stride(from: marker.count - 1, through: 1, by: -1) {
+                        if tail.hasSuffix(String(marker.prefix(length))) {
+                            tail.removeLast(length)
+                            break
+                        }
+                    }
+                }
+                if inThinking { thinking += tail }
+                else { reply += tail }
+                break
+            }
+            let segment = String(remaining[..<range.lowerBound])
+            if inThinking {
+                thinking += segment
+                blocks.append(thinking)
+                thinking = ""
+            } else {
+                reply += segment
+            }
+            inThinking.toggle()
+            remaining = remaining[range.upperBound...]
+        }
+        if inThinking { blocks.append(thinking) }
+        let trimmedBlocks = blocks.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        return (think: blocks.isEmpty ? nil : trimmedBlocks.joined(separator: "\n\n"),
+                reply: reply.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 }
 
@@ -229,7 +273,8 @@ struct ChatView: View {
         let thinkingEnabled = thinking.nativeConfig(for: engine.thinkingCapabilities,
                                                    chatTemplateEnabled: useChatTemplate).enabled == 1
         // The opening thinking marker is now prefilled in the prompt, not generated.
-        let assistantMessage = ChatMessage(role: .assistant, text: thinkingEnabled ? "<think>\n" : "", timestamp: Date())
+        let assistantMessage = ChatMessage(role: .assistant, text: thinkingEnabled ? "<think>\n" : "",
+                                           timestamp: Date(), isStreaming: true)
         messages.append(assistantMessage)
         let assistantIndex = messages.count - 1
         let outputBudget = maxOutputTokens
@@ -284,6 +329,7 @@ struct ChatView: View {
             }
 
             if !gotTokens { messages[assistantIndex].text = "" }
+            messages[assistantIndex].isStreaming = false
             isGenerating = false
         }
     }
@@ -323,20 +369,7 @@ struct MessageBubble: View {
 
     /// Split text into visible reply and thinking content
     private var parsedContent: (think: String?, reply: String) {
-        let text = message.text
-        // Match <think>...</think> blocks
-        guard let thinkStart = text.range(of: "<think>"),
-              let thinkEnd = text.range(of: "</think>") else {
-            // No complete think block — check if still streaming thinking
-            if text.hasPrefix("<think>") {
-                let thinkBody = String(text.dropFirst("<think>".count))
-                return (think: thinkBody, reply: "")
-            }
-            return (think: nil, reply: text)
-        }
-        let thinkBody = String(text[thinkStart.upperBound..<thinkEnd.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
-        let reply = String(text[thinkEnd.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
-        return (think: thinkBody, reply: reply)
+        message.parsedContent
     }
 
     var body: some View {

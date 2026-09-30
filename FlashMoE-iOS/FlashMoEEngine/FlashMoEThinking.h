@@ -5,6 +5,48 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define FLASHMOE_THINKING_END_TEXT "</think>\n\n"
+
+typedef struct {
+    int in_think;
+    int think_tokens;
+    int closing_index;  // -1 unless a forced transition is being emitted
+    int closing_count;
+    // ASCII text needs at most one token per byte. Filled by the model tokenizer.
+    uint32_t closing_tokens[sizeof(FLASHMOE_THINKING_END_TEXT) - 1];
+} FlashMoEThinkingState;
+
+static inline void flashmoe_thinking_state_init(FlashMoEThinkingState *state,
+                                               int starts_thinking) {
+    memset(state, 0, sizeof(*state));
+    state->in_think = starts_thinking;
+    state->closing_index = -1;
+}
+
+static inline void flashmoe_thinking_accept_token(FlashMoEThinkingState *state,
+                                                 int token, int start_token,
+                                                 int end_token) {
+    if (token == start_token) state->in_think = 1;
+    else if (token == end_token) state->in_think = 0;
+    else if (state->in_think) state->think_tokens++;
+}
+
+// Emit the entire transition through the ordinary decode loop before sampling
+// again. Its separator must enter the attention state, token count and stream.
+static inline int flashmoe_thinking_forced_token(FlashMoEThinkingState *state,
+                                                int budget) {
+    if (state->closing_index >= 0 && state->closing_index < state->closing_count) {
+        return (int)state->closing_tokens[state->closing_index++];
+    }
+    state->closing_index = -1;
+    if (state->in_think && budget > 0 && state->think_tokens >= budget &&
+        state->closing_count > 0) {
+        state->closing_index = 1;
+        return (int)state->closing_tokens[0];
+    }
+    return -1;
+}
+
 // Qwen3.5's enable_thinking chat-template prefixes. -1 preserves raw/unknown models.
 static inline const char *flashmoe_thinking_prefix(int mode) {
     if (mode > 0) return "<think>\n";

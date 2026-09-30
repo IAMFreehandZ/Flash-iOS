@@ -6,6 +6,86 @@
 
 static int failures;
 
+#define CHECK(condition, message) do { \
+    if (!(condition)) { fprintf(stderr, "FAIL: %s\n", message); failures++; } \
+} while (0)
+
+enum { START = 1001, END = 1002, SEPARATOR = 7, TEXT = 42 };
+
+static FlashMoEThinkingState thinking_state(int starts_thinking) {
+    FlashMoEThinkingState state;
+    flashmoe_thinking_state_init(&state, starts_thinking);
+    state.closing_tokens[0] = END;
+    state.closing_tokens[1] = SEPARATOR;
+    state.closing_count = 2;
+    return state;
+}
+
+static void accept(FlashMoEThinkingState *state, int token) {
+    flashmoe_thinking_accept_token(state, token, START, END);
+}
+
+static void test_budget_transition(void) {
+    // The opening marker is prefilled on both fresh and cached chat turns.
+    FlashMoEThinkingState state = thinking_state(1);
+    for (int i = 0; i < 1022; i++) {
+        CHECK(flashmoe_thinking_forced_token(&state, 1022) == -1,
+              "thinking stays open until the reasoning budget is consumed");
+        accept(&state, TEXT);
+    }
+    CHECK(flashmoe_thinking_forced_token(&state, 1022) == END,
+          "the budget forces the end marker");
+    accept(&state, END);
+    CHECK(!state.in_think, "the end marker closes thinking");
+    CHECK(flashmoe_thinking_forced_token(&state, 1022) == SEPARATOR,
+          "the answer separator is forced before sampling resumes");
+    accept(&state, SEPARATOR);
+    CHECK(state.think_tokens == 1022, "transition tokens are outside the reasoning budget");
+    CHECK(flashmoe_thinking_forced_token(&state, 1022) == -1,
+          "sampling resumes only after the full transition");
+    CHECK(strcmp(FLASHMOE_THINKING_END_TEXT, "</think>\n\n") == 0,
+          "the forced transition uses Qwen's answer boundary");
+}
+
+static void test_natural_end_and_unlimited(void) {
+    FlashMoEThinkingState state = thinking_state(1);
+    accept(&state, TEXT);
+    accept(&state, END);
+    CHECK(flashmoe_thinking_forced_token(&state, 1) == -1,
+          "a natural end is not replaced by a forced transition");
+    accept(&state, TEXT);
+    CHECK(state.think_tokens == 1, "answer tokens do not count as reasoning");
+
+    state = thinking_state(1);
+    for (int i = 0; i < 4096; i++) {
+        accept(&state, TEXT);
+        CHECK(flashmoe_thinking_forced_token(&state, 0) == -1,
+              "unlimited reasoning is never closed by a separate budget");
+    }
+}
+
+static void test_generated_open_and_multiple_separator_tokens(void) {
+    FlashMoEThinkingState state = thinking_state(0);
+    accept(&state, TEXT);
+    CHECK(state.think_tokens == 0, "direct answer text is outside thinking");
+    accept(&state, START);
+    CHECK(state.think_tokens == 0, "the opening marker is outside the reasoning budget");
+    accept(&state, TEXT);
+    state.closing_tokens[1] = 8;
+    state.closing_tokens[2] = 9;
+    state.closing_count = 3;
+    CHECK(flashmoe_thinking_forced_token(&state, 1) == END, "generated thinking can be limited");
+    accept(&state, END);
+    CHECK(flashmoe_thinking_forced_token(&state, 1) == 8, "the first separator token is queued");
+    accept(&state, 8);
+    CHECK(flashmoe_thinking_forced_token(&state, 1) == 9, "the entire encoded separator is queued");
+    accept(&state, 9);
+    CHECK(flashmoe_thinking_forced_token(&state, 1) == -1, "the queue drains completely");
+    accept(&state, START);
+    CHECK(flashmoe_thinking_forced_token(&state, 1) == END,
+          "reopening thinking does not reset the per-reply budget");
+}
+
 static void check_prompt(const char *name, const char *prompt, int mode,
                          const char *expected, int starts_thinking) {
     char *actual = flashmoe_prompt_with_thinking(prompt, mode);
@@ -52,13 +132,17 @@ int main(void) {
     free(off_turn);
 
     // Even at the default output limit, each preset has a distinct effective budget.
-    if (flashmoe_thinking_budget(128, 2048) != 128 ||
-        flashmoe_thinking_budget(512, 2048) != 512 ||
-        flashmoe_thinking_budget(2048, 2048) != 1023) {
-        fputs("FAIL: thinking presets do not preserve the answer reserve\n", stderr);
+    if (flashmoe_thinking_budget(128, 2048, 2) != 128 ||
+        flashmoe_thinking_budget(512, 2048, 2) != 512 ||
+        flashmoe_thinking_budget(2048, 2048, 2) != 1022 ||
+        flashmoe_thinking_budget(2048, 2048, 3) != 1021) {
+        fputs("FAIL: thinking presets must reserve the closing tag AND answer separator\n", stderr);
         failures++;
     }
+    test_budget_transition();
+    test_natural_end_and_unlimited();
+    test_generated_open_and_multiple_separator_tokens();
     if (failures) return 1;
-    puts("thinking tests passed (prompt modes, continuation switches, answer reserve)");
+    puts("thinking tests passed (prompt modes, continuation switches, answer reserve, forced transitions)");
     return 0;
 }
