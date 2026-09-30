@@ -16,6 +16,7 @@ Based on: https://github.com/Alexintosh/flash-moe/tree/feature/ios-app/FlashMoE-
 - **iOS storage protection** — Model files marked `isExcludedFromBackup` to prevent iOS from purging them
 - **Models & Settings** — Menu button to return to model list / I/O settings from chat
 - **Generation settings** — Saved context windows from 2,048 to 32,768 tokens (4,096 by default) and output limits from 512 to 8,192 tokens (2,048 by default). Chat displays used/total context tokens; reload the model to apply a new context window. Output fits the remaining context space, with half the budget reserved for the answer when thinking is limited.
+- **Sampling settings** — Temperature, top p, top k, min p, repetition penalty and window, and an optional fixed seed. Saved controls are available on the model screen and in the chat's Sampling Settings menu. Changes apply to the next reply without reloading the model. Defaults are temperature 0.7, top p 0.9, top k 40, min p 0, repetition penalty 1, a 64-token window, and fresh randomness. Set temperature to 0 for greedy decoding. See [device testing](docs/sampling-settings-testing.md).
 - **Copy script** — `copy_model_to_iphone.sh` to push models to device over USB cable with auto-detect, ETA, and per-file progress
 
 ## Copy model to iPhone

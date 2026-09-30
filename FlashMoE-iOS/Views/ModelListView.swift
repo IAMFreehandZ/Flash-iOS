@@ -126,6 +126,8 @@ struct ModelListView: View {
                     .foregroundStyle(.secondary)
             }
 
+            SamplingSettingsSection()
+
             if let error = downloadManager.error,
                downloadManager.activeDownload == nil {
                 Section {

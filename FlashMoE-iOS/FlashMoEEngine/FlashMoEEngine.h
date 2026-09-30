@@ -41,6 +41,18 @@ typedef struct {
     int verbose;                // 1 = log to stderr, 0 = quiet
 } FlashMoEConfig;
 
+// Sampling settings are applied on the generation thread before the next reply.
+typedef struct {
+    float temperature;         // 0 = greedy, supported range 0...2
+    float top_p;               // Cumulative probability cutoff, 0...1
+    int top_k;                 // Keep K highest scoring tokens; 0 = all
+    float min_p;               // Minimum probability relative to the maximum, 0...1
+    float repetition_penalty;  // 1 = disabled, supported range 1...2
+    int repetition_window;     // Recent conversation tokens to penalize, 0...512
+    int use_seed;              // 1 = use the fixed seed, 0 = random seed per chat
+    uint64_t seed;
+} FlashMoESamplingConfig;
+
 // ---- Engine stats ----
 typedef struct {
     // Model info
@@ -94,6 +106,10 @@ void flashmoe_unload(FlashMoEContext *ctx);
 void flashmoe_destroy(FlashMoEContext *ctx);
 
 // ---- Generation ----
+
+// Call on the same serial queue as generation. Values are normalized to valid ranges.
+// Applying settings preserves repetition history and RNG progress across continuations.
+void flashmoe_set_sampling(FlashMoEContext *ctx, const FlashMoESamplingConfig *config);
 
 // Generate tokens from a prompt. Blocks until generation completes or is cancelled.
 // The callback is called for each token on the calling thread.

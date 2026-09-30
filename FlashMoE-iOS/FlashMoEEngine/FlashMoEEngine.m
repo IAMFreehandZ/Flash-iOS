@@ -16,6 +16,7 @@
 
 #include "FlashMoEEngine.h"
 #include "FlashMoEGenerationLimits.h"
+#include "FlashMoESampling.h"
 #include <stdatomic.h>
 #include <os/proc.h>
 
@@ -46,6 +47,7 @@ struct FlashMoEContext {
     int current_pos;               // sequence position for RoPE (persists across turns)
     int turn_count;                // 0 = fresh session, >0 = has history
     int pending_token;             // last emitted token, not yet in attention state
+    FlashMoESampler sampler;
 
     // Generation stats
     double tokens_per_second;
@@ -110,6 +112,7 @@ FlashMoEContext *flashmoe_create(void) {
     if (!ctx) return NULL;
     ctx->loaded = 0;
     ctx->pending_token = -1;
+    flashmoe_sampler_init(&ctx->sampler);
     atomic_store(&ctx->cancelled, 0);
     ctx->last_error[0] = '\0';
     return ctx;
@@ -582,18 +585,47 @@ void flashmoe_unload(FlashMoEContext *ctx) {
         }
 
         ctx->loaded = 0;
+        flashmoe_sampler_free(&ctx->sampler);
     }
 }
 
 void flashmoe_destroy(FlashMoEContext *ctx) {
     if (!ctx) return;
     flashmoe_unload(ctx);
+    flashmoe_sampler_free(&ctx->sampler);
     free(ctx);
 }
 
 // ============================================================================
 // Generation — the core inference loop adapted for callback-based streaming
 // ============================================================================
+
+void flashmoe_set_sampling(FlashMoEContext *ctx, const FlashMoESamplingConfig *config) {
+    if (ctx && config) flashmoe_sampler_configure(&ctx->sampler, *config);
+}
+
+static uint64_t flashmoe_sampling_entropy(void) {
+    uint64_t entropy;
+    arc4random_buf(&entropy, sizeof(entropy));
+    return entropy;
+}
+
+static void flashmoe_record_sampling_token(FlashMoEContext *ctx, int token) {
+    // Keep control tokens available to close responses and thinking sections.
+    if (token != EOS_TOKEN_1 && token != EOS_TOKEN_2 &&
+        token != THINK_START_TOKEN && token != THINK_END_TOKEN) {
+        flashmoe_sampler_accept(&ctx->sampler, token);
+    }
+}
+
+static int flashmoe_sample_next_token(FlashMoEContext *ctx) {
+    int token = flashmoe_sampler_sample(&ctx->sampler, ctx->logits, VOCAB_SIZE);
+    if (token < 0) {
+        ctx->turn_count = 0;
+        snprintf(ctx->last_error, sizeof(ctx->last_error), "Sampling failed: invalid model logits or insufficient memory");
+    }
+    return token;
+}
 
 static void flashmoe_clear_attention_state(FlashMoEContext *ctx) {
     reset_delta_net_state();
@@ -693,6 +725,8 @@ int flashmoe_generate(
         ctx->pending_token = -1;
 
         int pos = 0;
+        flashmoe_sampler_reset(&ctx->sampler, flashmoe_sampling_entropy());
+        for (int i = 0; i < pt->count; i++) flashmoe_record_sampling_token(ctx, pt->ids[i]);
 
         // ---- Batch prefill: embed all prompt tokens ----
         float *embed_batch = NULL;
@@ -781,7 +815,9 @@ int flashmoe_generate(
         }
 
         lm_head_forward(ctx->wf, ctx->hidden, ctx->logits);
-        int next_token = cpu_argmax(ctx->logits, VOCAB_SIZE);
+        int next_token = flashmoe_sample_next_token(ctx);
+        if (next_token < 0) { free(pt->ids); free(pt); return -1; }
+        flashmoe_record_sampling_token(ctx, next_token);
 
         ctx->ttft_ms = now_ms() - t0;
         ctx->tokens_generated = 1;
@@ -849,7 +885,8 @@ int flashmoe_generate(
             }
 
             lm_head_forward(ctx->wf, ctx->hidden, ctx->logits);
-            next_token = cpu_argmax(ctx->logits, VOCAB_SIZE);
+            next_token = flashmoe_sample_next_token(ctx);
+            if (next_token < 0) { free(pt->ids); free(pt); return -1; }
 
             // Think budget: force end thinking
             if (in_think && think_budget > 0 && think_tokens >= think_budget) {
@@ -858,6 +895,7 @@ int flashmoe_generate(
             }
 
             ctx->tokens_generated++;
+            flashmoe_record_sampling_token(ctx, next_token);
 
             // Compute tok/s
             double elapsed_gen = now_ms() - gen_start;
@@ -949,6 +987,8 @@ int flashmoe_generate_continuation(
         max_tokens = output_budget;
 
         // NOTE: No reset_delta_net_state() — reuse KV caches and linear attention state
+        flashmoe_sampler_begin(&ctx->sampler, flashmoe_sampling_entropy());
+        for (int i = 0; i < pt->count; i++) flashmoe_record_sampling_token(ctx, pt->ids[i]);
         // Generation emits its final token before forwarding it. Consume that token
         // and close a response stopped by the output limit before starting the user turn.
         ctx->turn_count = 0;  // invalidate partial state if continuation is cancelled
@@ -1025,7 +1065,9 @@ int flashmoe_generate_continuation(
         }
 
         lm_head_forward(ctx->wf, ctx->hidden, ctx->logits);
-        int next_token = cpu_argmax(ctx->logits, VOCAB_SIZE);
+        int next_token = flashmoe_sample_next_token(ctx);
+        if (next_token < 0) { free(pt->ids); free(pt); return -1; }
+        flashmoe_record_sampling_token(ctx, next_token);
 
         ctx->ttft_ms = now_ms() - t0;
         ctx->tokens_generated = 1;
@@ -1082,7 +1124,8 @@ int flashmoe_generate_continuation(
             }
 
             lm_head_forward(ctx->wf, ctx->hidden, ctx->logits);
-            next_token = cpu_argmax(ctx->logits, VOCAB_SIZE);
+            next_token = flashmoe_sample_next_token(ctx);
+            if (next_token < 0) { free(pt->ids); free(pt); return -1; }
 
             if (in_think && think_budget > 0 && think_tokens >= think_budget) {
                 next_token = THINK_END_TOKEN;
@@ -1090,6 +1133,7 @@ int flashmoe_generate_continuation(
             }
 
             ctx->tokens_generated++;
+            flashmoe_record_sampling_token(ctx, next_token);
             double elapsed_gen = now_ms() - gen_start;
             ctx->tokens_per_second = elapsed_gen > 0 ? (ctx->tokens_generated - 1) * 1000.0 / elapsed_gen : 0;
 
@@ -1136,6 +1180,7 @@ void flashmoe_reset(FlashMoEContext *ctx) {
         flashmoe_clear_attention_state(ctx);
 
         // Reset conversation position
+        flashmoe_sampler_reset(&ctx->sampler, flashmoe_sampling_entropy());
         ctx->current_pos = 0;
         ctx->turn_count = 0;
         ctx->pending_token = -1;

@@ -231,7 +231,8 @@ final class FlashMoEEngine: @unchecked Sendable {
     // MARK: - Generation
 
     /// Generate tokens from a prompt, returning an AsyncStream of tokens
-    func generate(prompt: String, maxTokens: Int = GenerationSettings.defaultOutputTokens) -> AsyncStream<GenerationToken> {
+    func generate(prompt: String, maxTokens: Int = GenerationSettings.defaultOutputTokens,
+                  sampling: SamplingSettings = .load()) -> AsyncStream<GenerationToken> {
         AsyncStream { continuation in
             guard let ctx = context, state == .ready else {
                 continuation.finish()
@@ -254,6 +255,8 @@ final class FlashMoEEngine: @unchecked Sendable {
 
             engineQueue.async { [weak self] in
                 // C callback bridge: userdata points to the Swift continuation
+                var samplingConfig = sampling.nativeConfig
+                flashmoe_set_sampling(ctx, &samplingConfig)
                 let userDataPtr = Unmanaged.passRetained(
                     TokenCallbackContext(continuation: continuation, engine: self)
                 ).toOpaque()
@@ -317,7 +320,8 @@ final class FlashMoEEngine: @unchecked Sendable {
 
     /// Generate continuation — reuses KV cache from previous turns.
     /// Returns nil if context is full (caller should reset and use generate instead).
-    func generateContinuation(userMessage: String, maxTokens: Int = GenerationSettings.defaultOutputTokens) -> AsyncStream<GenerationToken> {
+    func generateContinuation(userMessage: String, maxTokens: Int = GenerationSettings.defaultOutputTokens,
+                              sampling: SamplingSettings = .load()) -> AsyncStream<GenerationToken> {
         AsyncStream { continuation in
             guard let ctx = context, state == .ready else {
                 continuation.finish()
@@ -338,6 +342,8 @@ final class FlashMoEEngine: @unchecked Sendable {
             }
 
             engineQueue.async { [weak self] in
+                var samplingConfig = sampling.nativeConfig
+                flashmoe_set_sampling(ctx, &samplingConfig)
                 let userDataPtr = Unmanaged.passRetained(
                     TokenCallbackContext(continuation: continuation, engine: self)
                 ).toOpaque()
