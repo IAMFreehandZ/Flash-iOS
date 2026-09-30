@@ -36,6 +36,13 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
+      - name: Test sampling controls
+        run: |
+          clang -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+            .github/scripts/test-sampling.c \
+            -o "$RUNNER_TEMP/test-sampling"
+          "$RUNNER_TEMP/test-sampling"
+
       - name: Test generation context limits
         run: |
           clang -std=c11 -Wall -Wextra -Werror \
