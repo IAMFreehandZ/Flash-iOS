@@ -82,6 +82,39 @@ final class ThinkingSettingsTests: XCTestCase {
         XCTAssertEqual(parsed.reply, "Introduction.")
     }
 
+    func testThinkingAliasAfterAStoryRemainsInTheDisclosure() {
+        let answer = "I hope you enjoyed it!\n</plaintext>\n<content>"
+        let parsed = content("<think>First plan</think>" + answer +
+                             "\n<thinking>Okay, the user asked for a short story.",
+                             isStreaming: true)
+        XCTAssertEqual(parsed.think, "First plan\n\nOkay, the user asked for a short story.")
+        XCTAssertEqual(parsed.reply, answer)
+    }
+
+    func testClosedThinkingAliasSeparatesReasoningFromTheAnswer() {
+        let parsed = content("<thinking>Plan the story.</thinking>Once upon a time.")
+        XCTAssertEqual(parsed.think, "Plan the story.")
+        XCTAssertEqual(parsed.reply, "Once upon a time.")
+    }
+
+    func testThinkingAliasMarkersSplitAcrossCallbacksAreHeldUntilComplete() {
+        for marker in ["<thinking>", "</thinking>"] {
+            for length in 1..<marker.count {
+                let suffix = String(marker.prefix(length))
+                let text = marker == "<thinking>" ? "Story" + suffix : "<thinking>Plan" + suffix
+                let parsed = content(text, isStreaming: true)
+                XCTAssertEqual(parsed.think, marker == "<thinking>" ? nil : "Plan", "Suffix: \(suffix)")
+                XCTAssertEqual(parsed.reply, marker == "<thinking>" ? "Story" : "", "Suffix: \(suffix)")
+            }
+        }
+    }
+
+    func testThinkingAliasAndCanonicalBlocksCanAlternate() {
+        let parsed = content("<thinking>First plan</thinking>Introduction. <think>More planning</think> Ending.")
+        XCTAssertEqual(parsed.think, "First plan\n\nMore planning")
+        XCTAssertEqual(parsed.reply, "Introduction.  Ending.")
+    }
+
     func testClosingMarkerSplitAcrossCallbacksNeverBecomesAnswerText() {
         for suffix in ["<", "</", "</t", "</th", "</thi", "</thin", "</think"] {
             let parsed = content("<think>Plan" + suffix, isStreaming: true)
