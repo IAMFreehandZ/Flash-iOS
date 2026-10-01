@@ -33,6 +33,10 @@ output tokens. Sampling resumes after the separator has been consumed by the mod
 The display parser keeps every marked thinking block in the disclosure, including
 a block reopened after an answer starts and an unfinished block at the output limit.
 Markers split across streaming callbacks are held until they are complete.
+The display also recognizes the `<thinking>` / `</thinking>` alias emitted in the
+issue #5 device sample. Other XML text, such as `<content>` and `</plaintext>`, is
+preserved as generated content. The engine's native thinking budget and prompt
+continue to use Qwen's `<think>` / `</think>` tokens.
 
 Settings are saved automatically and copied at the start of a reply. Changes
 during generation apply to the next reply without reloading or clearing the cache.
@@ -50,6 +54,8 @@ runs it with address and undefined-behavior sanitizers.
 `ThinkingSettingsTests` covers model capabilities, saved choices, the default
 budget, invalid preferences, Off versus Unlimited, raw mode, reply snapshots,
 long and reopened thinking blocks, incomplete blocks, split markers, and marker order.
+The alias regression cases replay the boundary after a story, completed alias
+blocks, every partial alias marker, and alternating canonical and alias blocks.
 `ThinkingSettingsUITests` checks available options and Off persistence across
 relaunch. Both targets are included in the existing simulator test workflow.
 
@@ -91,3 +97,16 @@ model. Device testing must establish whether the model produces a final answer
 after the forced transition. Untagged planning text after a valid closing marker
 cannot be identified reliably by the parser. Repetitive planning is deferred for
 a separate engine/model investigation, as requested.
+
+### Device feedback from the issue #5 IPA
+
+The tiered Qwen3.5 35B-A3B model (4-bit hot experts / 2-bit cold experts) produced
+another reasoning section after a complete story with Thinking Unlimited,
+temperature 1, Top P 0.9, and Top K disabled. The screenshot shows ordinary text
+markers `</plaintext>`, `<content>`, and `<thinking>` at that boundary.
+
+Replay that boundary in `ThinkingSettingsTests` to check display parsing. Qwen's
+published template uses `<think>` / `</think>`; its EOS IDs, 248046 and 248044,
+match the engine constants. Unlimited bypasses the forced thinking transition.
+This evidence identifies the alternative marker display case; establishing why
+the model begins another response requires a separate generation investigation.

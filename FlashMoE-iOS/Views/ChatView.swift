@@ -29,18 +29,24 @@ struct ChatMessage: Identifiable {
         var reply = ""
 
         while !remaining.isEmpty {
-            let marker = inThinking ? "</think>" : "<think>"
-            guard let range = remaining.range(of: marker) else {
+            let markers = inThinking ? ["</think>", "</thinking>"] : ["<think>", "<thinking>"]
+            let nextMarker = markers.compactMap { remaining.range(of: $0) }
+                .min { $0.lowerBound < $1.lowerBound }
+            guard let range = nextMarker else {
                 // A marker may span callbacks. Hold its unfinished suffix until
                 // the next token arrives so it cannot appear in the answer.
                 var tail = String(remaining)
                 if isStreaming {
-                    for length in stride(from: marker.count - 1, through: 1, by: -1) {
-                        if tail.hasSuffix(String(marker.prefix(length))) {
-                            tail.removeLast(length)
-                            break
+                    var heldLength = 0
+                    for marker in markers {
+                        for length in stride(from: marker.count - 1, through: 1, by: -1) {
+                            if tail.hasSuffix(String(marker.prefix(length))) {
+                                heldLength = max(heldLength, length)
+                                break
+                            }
                         }
                     }
+                    tail.removeLast(heldLength)
                 }
                 if inThinking { thinking += tail }
                 else { reply += tail }
